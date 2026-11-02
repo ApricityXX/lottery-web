@@ -5,6 +5,7 @@
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const esc = v => String(v == null ? "" : v).replace(/[&<>"']/g, c => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const wonBy = (w, p) => w.participantId ? w.participantId === p.id : w.name === p.name;
 
   const pinned = new URLSearchParams(location.search).get("activity");
   let actId = pinned, act = null, es = null;
@@ -129,12 +130,11 @@
       box.innerHTML = `<div class="empty"><div class="ico">👥</div><div class="t">暂无名单</div><div class="d">扫码签到或后台导入</div></div>`;
       return;
     }
-    const won = {};
-    if (a.settings && !a.settings.allowRepeat) a.winners.forEach(w => won[w.name] = true);
     let h = "";
     for (let i = a.participants.length - 1; i >= 0; i--) {
       const p = a.participants[i];
-      h += `<div class="p-item ${won[p.name] ? "won" : ""} ${hit && i === a.participants.length - 1 ? "hit" : ""}">
+      const won = a.settings && !a.settings.allowRepeat && a.winners.some(w => wonBy(w, p));
+      h += `<div class="p-item ${won ? "won" : ""} ${hit && i === a.participants.length - 1 ? "hit" : ""}">
         <span class="nm">${esc(p.name)}</span>${p.dept ? `<span class="dp">${esc(p.dept)}</span>` : ""}</div>`;
     }
     box.innerHTML = h;
@@ -204,21 +204,14 @@
   function poolSize(a) {
     const s = a || act;
     if (!s) return 0;
-    let names = s.participants.map(p => p.name);
-    if (s.settings && !s.settings.allowRepeat) {
-      const won = new Set(s.winners.map(w => w.name));
-      names = names.filter(n => !won.has(n));
-    }
-    return names.length;
+    if (s.settings && s.settings.allowRepeat) return s.participants.length;
+    return s.participants.filter(p => !s.winners.some(w => wonBy(w, p))).length;
   }
   function pool() {
     if (!act) return [];
-    let names = act.participants.map(p => p.name);
-    if (act.settings && !act.settings.allowRepeat) {
-      const won = new Set(act.winners.map(w => w.name));
-      names = names.filter(n => !won.has(n));
-    }
-    return names;
+    const people = (act.settings && act.settings.allowRepeat) ? act.participants
+      : act.participants.filter(p => !act.winners.some(w => wonBy(w, p)));
+    return people.map(p => p.name);
   }
   function stopRoll() {
     if (rollTimer) { clearInterval(rollTimer); rollTimer = null; }

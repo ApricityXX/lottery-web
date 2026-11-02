@@ -446,7 +446,7 @@ function activityFormHtml(a) {
     name: "", note: "", status: "active",
     prizes: [{ name: "一等奖", count: 1, drawCount: 1 }, { name: "二等奖", count: 2, drawCount: 1 }, { name: "三等奖", count: 3, drawCount: 3 }],
     settings: { allowRepeat: false, dedupeName: true, removeOnWin: false, rollSeconds: 3, sound: true, confetti: true, showCount: true, showWinnerWall: true },
-    checkin: { enabled: true, mode: "lan", publicBaseUrl: "", welcome: "输入姓名即可加入抽奖名单", fields: [{ key: "name", label: "姓名", required: true }] }
+    checkin: { enabled: true, mode: "lan", publicBaseUrl: "", tunnelDomain: "", welcome: "输入姓名即可加入抽奖名单", fields: [{ key: "name", label: "姓名", required: true }] }
   };
   const s = d.settings, c = d.checkin;
   const sc = d.schedule || { enabled: false, startAt: "", endAt: "" };
@@ -536,15 +536,21 @@ function activityFormHtml(a) {
       <div class="field">
         <label class="lbl">签到方式</label>
         <select class="select" id="cMode">
+          <option value="tunnel"${c.mode === "tunnel" ? " selected" : ""}>一键远程签到（推荐，手机任意网络可用）</option>
           <option value="lan"${c.mode === "lan" ? " selected" : ""}>局域网扫码（手机需与电脑同一 Wi-Fi）</option>
-          <option value="public"${c.mode === "public" ? " selected" : ""}>公网地址扫码（手机无需同一 Wi-Fi）</option>
+          <option value="public"${c.mode === "public" ? " selected" : ""}>自定义公网地址（已有固定入口时使用）</option>
           <option value="manual"${c.mode === "manual" ? " selected" : ""}>仅手动导入名单（不开放扫码）</option>
         </select>
+      </div>
+      <div class="field" id="fTunnelWrap">
+        <label class="lbl">ngrok 固定域名（可选）</label>
+        <input class="input" id="cTunnelDomain" placeholder="留空自动分配；或填 https://你的域名.ngrok-free.dev" value="${esc(c.tunnelDomain || "")}" />
+        <div class="hint">保存后在活动「概览」点击启动远程签到。无需手动复制地址，二维码会自动更新；首次使用需先自行完成 ngrok 授权。</div>
       </div>
       <div class="field" id="fPublicWrap">
         <label class="lbl">公网地址</label>
         <input class="input" id="cPublic" placeholder="例：https://xxxx.trycloudflare.com" value="${esc(c.publicBaseUrl || "")}" />
-        <div class="hint">用 cloudflared / ngrok 等内网穿透拿到地址填这里，手机用流量也能扫码签到。</div>
+        <div class="hint">仅在你已经使用其他内网穿透或公网服务时填写；一般情况下选「一键远程签到」即可。</div>
       </div>
       <div class="field">
         <label class="lbl">签到页欢迎语</label>
@@ -647,6 +653,7 @@ function bindFieldRows(root) {
 function syncPublic(root) {
   const m = $("#cMode", root).value;
   $("#fPublicWrap", root).style.display = m === "public" ? "" : "none";
+  $("#fTunnelWrap", root).style.display = m === "tunnel" ? "" : "none";
 }
 function bindPrizeRows(root) {
   $$("[data-pdel]", root).forEach(b => {
@@ -686,6 +693,7 @@ function readForm(root) {
       enabled: $("#cEnabled", root).checked,
       mode: $("#cMode", root).value,
       publicBaseUrl: $("#cPublic", root).value.trim(),
+      tunnelDomain: $("#cTunnelDomain", root).value.trim(),
       welcome: $("#cWelcome", root).value.trim(),
       fields
     }
@@ -825,18 +833,19 @@ async function renderOverview() {
       </div>
       <div class="card">
         <div class="card-hd"><h3>📱 签到入口</h3>
-          ${a.checkin.enabled ? `<span class="tag ${a.checkin.mode === "public" ? "blue" : "green"}">${a.checkin.mode === "public" ? "公网地址" : a.checkin.mode === "manual" ? "仅导入" : "局域网"}</span>` : `<span class="tag gray">未启用</span>`}
+          ${a.checkin.enabled ? `<span class="tag ${["public", "tunnel"].includes(a.checkin.mode) ? "blue" : "green"}">${({ public: "公网地址", tunnel: "一键远程", manual: "仅导入", lan: "局域网" })[a.checkin.mode] || "局域网"}</span>` : `<span class="tag gray">未启用</span>`}
         </div>
         ${a.checkin.enabled && a.checkin.mode !== "manual" ? `
-          <div class="kv"><span>签到地址</span><span class="ellipsis" style="max-width:60%">${esc(url.url || "")}</span></div>
+          <div class="kv"><span>签到地址</span><span class="ellipsis" style="max-width:60%">${esc(url.url || "远程连接尚未就绪")}</span></div>
           <div class="kv"><span>填写项</span><span>${(a.checkin.fields || []).map(f => esc(f.label) + (f.required ? "*" : "")).join("、")}</span></div>
           <div class="kv"><span>已签到</span><span>${a.counts.participants} 人</span></div>
           <div class="btn-row" style="margin-top:14px">
             <button class="btn btn-primary" id="openQr">打开二维码页</button>
-            <button class="btn" id="copyUrl">📋 复制地址</button>
+            <button class="btn" id="copyUrl"${url.url ? "" : " disabled"}>📋 复制地址</button>
             <a class="btn" href="/checkin?activity=${a.id}" target="_blank">预览签到页</a>
           </div>
-          <div class="hint">${a.checkin.mode === "public" ? "手机使用任意网络（含流量）都能扫码签到。" : "手机需要与电脑连接同一个 Wi-Fi 才能扫码；若现场做不到，可在「设置」里改成公网地址扫码。"}</div>
+          <div class="hint">${["public", "tunnel"].includes(a.checkin.mode) ? "手机使用任意网络（含流量）都能扫码签到，数据直接进入本机名单。" : "手机需要与电脑连接同一个 Wi-Fi 才能扫码；若现场做不到，可在「设置」里改成一键远程签到。"}</div>
+          <div id="tunnelPanel"></div>
         ` : `<div class="empty"><div class="ico">📵</div><div class="t">本活动未开放扫码签到</div><div class="d">名单请到「名单」页批量导入</div></div>`}
       </div>
     </div>`;
@@ -845,6 +854,42 @@ async function renderOverview() {
     const t = url.url || "";
     if (navigator.clipboard) navigator.clipboard.writeText(t);
     toast("已复制签到地址", "ok");
+  };
+  if (a.checkin.mode === "tunnel") refreshTunnelPanel();
+}
+
+async function refreshTunnelPanel() {
+  const panel = $("#tunnelPanel");
+  if (!panel || !S.act) return;
+  if (!isAdmin()) {
+    panel.innerHTML = `<div class="hint" style="margin-top:10px">远程连接的启动与停止由系统管理员操作。</div>`;
+    return;
+  }
+  const r = await apiGet("/api/tunnel");
+  if (!r.ok || !$("#tunnelPanel")) return;
+  const t = r.tunnel || { state: "stopped", error: "" };
+  const labels = { stopped: "未启动", starting: "正在连接", running: "已连接", error: "连接异常" };
+  const classes = { stopped: "gray", starting: "gold", running: "green", error: "red" };
+  panel.innerHTML = `
+    <div style="border-top:1px solid var(--line);margin-top:14px;padding-top:14px">
+      <div class="row between">
+        <span class="small">远程连接 <span class="tag ${classes[t.state] || "gray"}">${labels[t.state] || t.state}</span></span>
+        <button class="btn btn-sm ${t.state === "running" ? "" : "btn-primary"}" id="tunnelToggle"${t.state === "starting" ? " disabled" : ""}>
+          ${t.state === "running" ? "停止远程签到" : t.state === "starting" ? "连接中…" : "启动远程签到"}</button>
+      </div>
+      ${!t.available ? `<div class="hint" style="color:var(--c-danger);margin-top:8px">未找到 ngrok，请安装后重启本程序。</div>` : ""}
+      ${t.error ? `<div class="hint" style="color:var(--c-danger);margin-top:8px">${esc(t.error)}</div>` : ""}
+      ${t.state === "running" ? `<div class="hint" style="margin-top:8px">二维码已切换为公网地址；本机服务需保持运行。</div>` : ""}
+    </div>`;
+  const btn = $("#tunnelToggle");
+  if (btn) btn.onclick = async () => {
+    btn.disabled = true;
+    const result = t.state === "running"
+      ? await apiPost("/api/tunnel/stop", {})
+      : await apiPost("/api/activity/" + S.act.id + "/tunnel-start", {});
+    if (!result.ok) toast(result.error || "远程连接操作失败", "err");
+    else toast(t.state === "running" ? "远程签到已停止" : "正在建立远程连接", "ok");
+    await renderOverview();
   };
 }
 
@@ -884,7 +929,7 @@ function renderPeople() {
     <div class="grid grid-3" style="margin-bottom:14px">
       ${miniStat("名单总数", S.act.counts.participants, "👥")}
       ${miniStat("可参与抽奖", eligibleCount(), "🎯")}
-      ${miniStat("已中奖", new Set(S.act.winners.map(w => w.name)).size, "🏅")}
+      ${miniStat("已中奖", new Set(S.act.winners.map(w => w.participantId || w.name)).size, "🏅")}
     </div>
 
     <div class="card">
@@ -1339,10 +1384,9 @@ function renderDraw() {
 }
 function eligibleCount() {
   const a = S.act;
-  const names = a.participants.map(p => p.name);
-  if (a.settings.allowRepeat) return names.length;
-  const won = new Set(a.winners.map(w => w.name));
-  return names.filter(n => !won.has(n)).length;
+  if (a.settings.allowRepeat) return a.participants.length;
+  return a.participants.filter(p => !a.winners.some(w =>
+    w.participantId ? w.participantId === p.id : w.name === p.name)).length;
 }
 
 /* ---- 中奖记录 ---- */
@@ -1689,6 +1733,10 @@ function connectSSE() {
     } catch (err) { /* ignore */ }
   });
   sse.addEventListener("activities", () => { loadActs(); });
+  sse.addEventListener("tunnel", () => {
+    if (S.act && S.act.checkin && S.act.checkin.mode === "tunnel" &&
+        parseHash().name === "activity" && S.tab === "overview") renderOverview();
+  });
 }
 
 (async function boot() {

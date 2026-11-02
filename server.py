@@ -17,7 +17,7 @@
 
 数据保存在同目录 lottery.db（SQLite 数据库，WAL 模式，事务安全），重启不丢失。
 首次启动若检测到旧版 data.json，会自动迁移进数据库并把旧文件备份为 data.json.bak。
-模块划分：server.py（HTTP 与业务） / db.py（SQLite 存储） / parsers.py（名单解析）。
+模块划分：server.py（HTTP 与业务） / db.py（SQLite 存储） / parsers.py（名单解析） / tunnel.py（远程签到）。
 """
 
 import base64
@@ -27,8 +27,8 @@ import hmac
 import io
 import json
 import os
-import random
 import re
+import secrets
 import socket
 import sys
 import threading
@@ -39,6 +39,7 @@ from urllib.parse import urlparse, parse_qs
 
 import db
 import parsers
+import tunnel
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -63,8 +64,9 @@ DEFAULT_SETTINGS = {
 
 DEFAULT_CHECKIN = {
     "enabled": True,
-    "mode": "lan",           # lan=局域网 / public=公网地址 / manual=仅手动导入
+    "mode": "lan",           # lan=局域网 / tunnel=一键远程 / public=自定义公网地址 / manual=仅手动导入
     "publicBaseUrl": "",
+    "tunnelDomain": "",
     "welcome": "输入姓名即可加入抽奖名单",
     "fields": [{"key": "name", "label": "姓名", "required": True}],
 }
@@ -94,13 +96,21 @@ def sanitize_fields(fields):
     return out
 
 
+def winner_matches(w, p):
+    participant_id = w.get("participantId")
+    return participant_id == p.get("id") if participant_id else w.get("name") == p.get("name")
+
+
 def prize_map(a):
-    """姓名 → 所中奖项列表（按中奖先后，去重）"""
+    """参与人 ID → 所中奖项列表；旧记录没有 ID 时按姓名兼容"""
     out = {}
     for w in (a.get("winners") or []):
-        lst = out.setdefault(w.get("name", ""), [])
-        if w.get("prize") and w["prize"] not in lst:
-            lst.append(w["prize"])
+        for p in a.get("participants") or []:
+            if not winner_matches(w, p):
+                continue
+            lst = out.setdefault(p["id"], [])
+            if w.get("prize") and w["prize"] not in lst:
+                lst.append(w["prize"])
     return out
 
 
@@ -181,7 +191,23 @@ ROLE_LABELS = {"admin": "管理员", "user": "普通用户"}
 # ---------------- 用户与会话 ----------------
 
 def pass_hash(pw):
-    return hashlib.sha256((state["salt"] + "|" + str(pw)).encode("utf-8")).hexdigest()
+    salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", str(pw).encode("utf-8"), bytes.fromhex(salt), 180000).hex()
+    return "pbkdf2_sha256$180000$%s$%s" % (salt, digest)
+
+
+def password_matches(stored, pw):
+    stored = str(stored or "")
+    if not stored.startswith("pbkdf2_sha256$"):
+        legacy = hashlib.sha256((state["salt"] + "|" + str(pw)).encode("utf-8")).hexdigest()
+        return hmac.compare_digest(stored, legacy)
+    try:
+        _, rounds, salt, expected = stored.split("$", 3)
+        actual = hashlib.pbkdf2_hmac("sha256", str(pw).encode("utf-8"),
+                                     bytes.fromhex(salt), int(rounds)).hex()
+        return hmac.compare_digest(actual, expected)
+    except Exception:
+        return False
 
 
 def find_user(uid_):
@@ -367,7 +393,7 @@ def prize_progress(a):
     return out
 
 
-def activity_public(a):
+def activity_admin(a):
     sch = a.get("schedule") or DEFAULT_SCHEDULE
     return {
         "id": a["id"], "name": a["name"], "note": a.get("note", ""),
@@ -391,6 +417,24 @@ def activity_public(a):
         "owner": a.get("owner", ""),
         "ownerName": a.get("ownerName", ""),
     }
+
+
+def public_person(p):
+    return {"id": p.get("id", ""), "name": p.get("name", ""), "dept": p.get("dept", "")}
+
+
+def public_winner(w):
+    return {"id": w.get("id", ""), "participantId": w.get("participantId", ""),
+            "name": w.get("name", ""), "dept": w.get("dept", ""),
+            "prize": w.get("prize", ""), "prizeId": w.get("prizeId", ""),
+            "time": w.get("time", ""), "drawId": w.get("drawId", "")}
+
+
+def activity_public(a):
+    data = activity_admin(a)
+    data["participants"] = [public_person(p) for p in a["participants"]]
+    data["winners"] = [public_winner(w) for w in a["winners"]]
+    return data
 
 
 def activity_brief(a):
@@ -487,6 +531,9 @@ def checkin_url_of(a):
     pub = (ck.get("publicBaseUrl") or "").strip().rstrip("/")
     if ck.get("mode") == "public" and pub:
         return pub + path, "public"
+    if ck.get("mode") == "tunnel":
+        current = tunnel_manager.public_status()
+        return (current["url"] + path if current["url"] else ""), "tunnel"
     return "http://%s:%d%s" % (LAN_IP, PORT, path), "lan"
 
 
@@ -502,10 +549,18 @@ def _write_client(client, data):
             return False
 
 
-def broadcast(event, payload, activity_id=None):
+def broadcast(event, payload, activity_id=None, private=None, owner_id=None):
     msg = ("event: %s\ndata: %s\n\n" % (event, json.dumps(payload, ensure_ascii=False))).encode("utf-8")
     with clients_lock:
-        targets = [c for c in clients if activity_id is None or c.get("activity") in (None, activity_id)]
+        targets = []
+        for c in clients:
+            if activity_id is not None and c.get("activity") not in (None, activity_id):
+                continue
+            if private is not None and bool(c.get("private")) != private:
+                continue
+            if owner_id and private and not c.get("isAdmin") and c.get("userId") != owner_id:
+                continue
+            targets.append(c)
     dead = [c for c in targets if not _write_client(c, msg)]
     if dead:
         with clients_lock:
@@ -514,10 +569,31 @@ def broadcast(event, payload, activity_id=None):
                     clients.remove(c)
 
 
+def public_event(event, payload):
+    if event == "checkin":
+        return dict(payload, participant=public_person(payload["participant"]))
+    if event == "draw":
+        return dict(payload, winners=[public_winner(w) for w in payload["winners"]])
+    return payload
+
+
+def broadcast_event(a, event, payload):
+    broadcast(event, public_event(event, payload), a["id"], private=False)
+    broadcast(event, payload, a["id"], private=True, owner_id=a.get("owner"))
+
+
 def broadcast_activity(a, event=None, payload=None):
     if event:
-        broadcast(event, payload, a["id"])
-    broadcast("state", activity_public(a), a["id"])
+        broadcast_event(a, event, payload)
+    broadcast("state", activity_public(a), a["id"], private=False)
+    broadcast("state", activity_admin(a), a["id"], private=True, owner_id=a.get("owner"))
+
+
+def on_tunnel_change(status):
+    broadcast("tunnel", tunnel_manager.public_status())
+
+
+tunnel_manager = tunnel.TunnelManager(PORT, on_tunnel_change)
 
 
 # ---------------- HTTP ----------------
@@ -562,6 +638,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _body(self):
         length = int(self.headers.get("Content-Length") or 0)
+        if length < 0 or length > 12 * 1024 * 1024:
+            self.close_connection = True
+            raise ValueError("请求内容过大，单个文件请控制在 8 MB 以内")
         raw = self.rfile.read(length) if length else b""
         try:
             return json.loads(raw.decode("utf-8")) if raw else {}
@@ -617,8 +696,9 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def _set_cookie(self, value, clear=False):
-        self.send_header("Set-Cookie", "%s=%s; Path=/; SameSite=Lax%s" %
-                         (COOKIE_NAME, value, "; Max-Age=0" if clear else "; Max-Age=604800"))
+        secure = "; Secure" if self.headers.get("X-Forwarded-Proto") == "https" else ""
+        self.send_header("Set-Cookie", "%s=%s; Path=/; SameSite=Lax; HttpOnly%s%s" %
+                         (COOKIE_NAME, value, "; Max-Age=0" if clear else "; Max-Age=604800", secure))
 
     # ---- GET ----
     def do_GET(self):
@@ -655,6 +735,11 @@ class Handler(BaseHTTPRequestHandler):
                 info["checkinUrl"] = url
                 info["checkinMode"] = mode
             return self._json(info)
+
+        if path == "/api/tunnel":
+            if self._need_admin():
+                return
+            return self._json(dict(ok=True, tunnel=tunnel_manager.status()))
 
         if path == "/api/stats":
             if self._need_login():
@@ -709,7 +794,9 @@ class Handler(BaseHTTPRequestHandler):
                 a = find_activity(m.group(1))
                 if not a:
                     return self._json({"ok": False, "error": "活动不存在"}, 404)
-                return self._json(activity_public(a))
+                me = self.current_user()
+                full = not has_users() or owns(me, a)
+                return self._json(activity_admin(a) if full else activity_public(a))
 
         m = re.match(r"^/api/activity/([0-9a-f]+)/participants$", path)
         if m:
@@ -730,7 +817,10 @@ class Handler(BaseHTTPRequestHandler):
                 if not a:
                     return self._json({"ok": False, "error": "活动不存在"}, 404)
                 url, mode = checkin_url_of(a)
-                return self._json({"ok": True, "url": url, "mode": mode, "activity": a["name"]})
+                result = {"ok": True, "url": url, "mode": mode, "activity": a["name"]}
+                if mode == "tunnel":
+                    result["tunnel"] = tunnel_manager.public_status()
+                return self._json(result)
 
         m = re.match(r"^/api/activity/([0-9a-f]+)/export$", path)
         if m:
@@ -819,7 +909,6 @@ class Handler(BaseHTTPRequestHandler):
             if not a:
                 return self._json({"ok": False, "error": "活动不存在"}, 404)
             won_map = prize_map(a)
-            won_names = set(won_map)
             items = []
             for p in a["participants"]:
                 if kw and kw not in (p["name"] + " " + (p.get("dept") or "") + " " +
@@ -827,13 +916,13 @@ class Handler(BaseHTTPRequestHandler):
                     continue
                 if src and p.get("source") != src:
                     continue
-                if only_win == "1" and p["name"] not in won_names:
+                if only_win == "1" and p["id"] not in won_map:
                     continue
-                if only_win == "0" and p["name"] in won_names:
+                if only_win == "0" and p["id"] in won_map:
                     continue
-                if only_win and only_win not in ("0", "1") and only_win not in won_map.get(p["name"], []):
+                if only_win and only_win not in ("0", "1") and only_win not in won_map.get(p["id"], []):
                     continue       # 按具体奖项筛选
-                prizes = won_map.get(p["name"], [])
+                prizes = won_map.get(p["id"], [])
                 items.append(dict(p, won=bool(prizes), wonPrizes=prizes,
                                   wonPrize="、".join(prizes)))
             total = len(items)
@@ -856,7 +945,7 @@ class Handler(BaseHTTPRequestHandler):
                 wmap = prize_map(a)
                 rows = []
                 for p in a["participants"]:
-                    prizes = wmap.get(p.get("name", ""), [])
+                    prizes = wmap.get(p.get("id", ""), [])
                     rows.append([p.get("name", ""), p.get("empId", ""), p.get("dept", ""), p.get("phone", "")]
                                 + [field_value(p, f["key"]) for f in extra_fields]
                                 + ["是" if prizes else "", "、".join(prizes),
@@ -920,14 +1009,21 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "keep-alive")
         self.end_headers()
-        client = {"w": self.wfile, "lock": threading.Lock(), "activity": activity_id}
+        me = self.current_user()
+        with state_lock:
+            a = find_activity(activity_id) if activity_id else None
+            private = (not activity_id and (not has_users() or bool(me))) or (a is not None and owns(me, a))
+        client = {"w": self.wfile, "lock": threading.Lock(), "activity": activity_id,
+                  "private": private, "userId": me["id"] if me else "",
+                  "isAdmin": bool(me and me.get("role") == "admin")}
         with clients_lock:
             clients.append(client)
         try:
             with state_lock:
                 if activity_id:
                     a = find_activity(activity_id)
-                    snap = activity_public(a) if a else {"ok": False, "error": "活动不存在"}
+                    snap = ((activity_admin(a) if private else activity_public(a)) if a
+                            else {"ok": False, "error": "活动不存在"})
                 else:
                     snap = {"currentActivityId": (current_activity() or {}).get("id")}
             _write_client(client, ("event: state\ndata: %s\n\n" % json.dumps(snap, ensure_ascii=False)).encode("utf-8"))
@@ -947,7 +1043,10 @@ class Handler(BaseHTTPRequestHandler):
         apply_schedule()
         u = urlparse(self.path)
         path = u.path
-        body = self._body()
+        try:
+            body = self._body()
+        except ValueError as exc:
+            return self._json({"ok": False, "error": str(exc)}, 413)
         try:
             # 活动类写操作统一前置校验：必须登录 + 是创建者或管理员
             # （checkin / checkin-url 是现场公开接口，不在此拦截）
@@ -999,10 +1098,12 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json({"ok": False, "error": "系统还没有账号，请先注册"}, 400)
                 with state_lock:
                     u = find_user_by_name(name)
-                    if not u or u.get("pass") != pass_hash(pw):
+                    if not u or not password_matches(u.get("pass"), pw):
                         return self._json({"ok": False, "error": "用户名或密码不正确"}, 401)
                     if u.get("disabled"):
                         return self._json({"ok": False, "error": "该账号已被禁用，请联系管理员"}, 403)
+                    if not str(u.get("pass") or "").startswith("pbkdf2_sha256$"):
+                        u["pass"] = pass_hash(pw)
                     u["lastLogin"] = now_full()
                     save_state_locked()
                     token = sign_token(u["id"])
@@ -1038,7 +1139,7 @@ class Handler(BaseHTTPRequestHandler):
                     u = find_user_by_name(name)
                     if not u:
                         return self._json({"ok": False, "error": "该用户不存在"}, 404)
-                    if not u.get("securityAnswer") or u.get("securityAnswer") != pass_hash(ans):
+                    if not u.get("securityAnswer") or not password_matches(u.get("securityAnswer"), ans):
                         return self._json({"ok": False, "error": "安全问题答案不正确"}, 400)
                     if u.get("disabled"):
                         return self._json({"ok": False, "error": "该账号已被禁用，请联系管理员"}, 403)
@@ -1143,16 +1244,57 @@ class Handler(BaseHTTPRequestHandler):
                     data = json.loads(raw)
                 except Exception as e:
                     return self._json({"ok": False, "error": "备份文件解析失败：%s" % e}, 400)
-                if "activities" not in data:
+                if not isinstance(data.get("activities"), list) or not isinstance(data.get("users", []), list):
                     return self._json({"ok": False, "error": "不是有效的备份文件"}, 400)
+                if (any(not isinstance(a, dict) or not a.get("id") for a in data["activities"]) or
+                        any(not isinstance(u, dict) or not u.get("id") for u in data.get("users", []))):
+                    return self._json({"ok": False, "error": "备份内容不完整，已取消恢复"}, 400)
                 with state_lock:
-                    state["activities"] = data["activities"]
-                    state["currentActivityId"] = data.get("currentActivityId")
-                    for a in state["activities"]:
+                    candidate = {
+                        "activities": json.loads(json.dumps(data["activities"])),
+                        "users": [db.canonical_user(u) for u in data.get("users", [])],
+                        "currentActivityId": data.get("currentActivityId"),
+                        "settings": data.get("settings") or {"adminPass": ""},
+                        "salt": str(data.get("salt") or state["salt"]),
+                    }
+                    if candidate["users"] and not any(u["role"] == "admin" and not u["disabled"]
+                                                       for u in candidate["users"]):
+                        return self._json({"ok": False, "error": "备份中没有可用管理员，已取消恢复"}, 400)
+                    for a in candidate["activities"]:
+                        a["participants"] = [db.canonical_person(p) for p in a.get("participants", [])]
+                        a["winners"] = [db.canonical_winner(w) for w in a.get("winners", [])]
                         a.setdefault("schedule", dict(DEFAULT_SCHEDULE))
-                    save_state_locked()
+                        settings = dict(DEFAULT_SETTINGS)
+                        settings.update(a.get("settings") or {})
+                        a["settings"] = settings
+                        checkin = json.loads(json.dumps(DEFAULT_CHECKIN))
+                        checkin.update(a.get("checkin") or {})
+                        a["checkin"] = checkin
+                    store.import_state(candidate)
+                    state.update(candidate)
                 broadcast("activities", {"ok": True})
-                return self._json({"ok": True, "activities": len(state["activities"])})
+                return self._json({"ok": True, "activities": len(state["activities"]),
+                                   "users": len(state["users"])})
+
+            # ===== 一键远程签到 =====
+            if path == "/api/tunnel/stop":
+                if self._need_admin():
+                    return
+                return self._json({"ok": True, "tunnel": tunnel_manager.stop()})
+
+            m_tunnel = re.match(r"^/api/activity/([0-9a-f]+)/tunnel-start$", path)
+            if m_tunnel:
+                if self._need_admin():
+                    return
+                with state_lock:
+                    a = find_activity(m_tunnel.group(1))
+                    domain = (a.get("checkin") or {}).get("tunnelDomain", "")
+                try:
+                    current = tunnel_manager.start(domain)
+                except ValueError as exc:
+                    return self._json({"ok": False, "error": str(exc)}, 400)
+                return self._json({"ok": current["state"] != "error", "tunnel": current,
+                                   "error": current["error"]})
 
             # ===== 活动 =====
             if path == "/api/activities":
@@ -1245,10 +1387,12 @@ class Handler(BaseHTTPRequestHandler):
                         ck, src = a["checkin"], body["checkin"]
                         if "enabled" in src:
                             ck["enabled"] = bool(src["enabled"])
-                        if src.get("mode") in ("lan", "public", "manual"):
+                        if src.get("mode") in ("lan", "tunnel", "public", "manual"):
                             ck["mode"] = src["mode"]
                         if "publicBaseUrl" in src:
                             ck["publicBaseUrl"] = str(src["publicBaseUrl"]).strip().rstrip("/")[:200]
+                        if "tunnelDomain" in src:
+                            ck["tunnelDomain"] = str(src["tunnelDomain"]).strip().rstrip("/")[:200]
                         if "welcome" in src:
                             ck["welcome"] = str(src["welcome"]).strip()[:60]
                         if isinstance(src.get("fields"), list):
@@ -1380,8 +1524,7 @@ class Handler(BaseHTTPRequestHandler):
                         return self._json({"ok": False, "error": "文件解析失败：%s" % e}, 400)
                 else:
                     text = str(body.get("text") or "")
-                    rows = [[c.strip() for c in re.split(r"[,，\t;；]", l)]
-                            for l in text.splitlines() if l.strip()]
+                    rows = parsers.parse_lines(text)
                 rows = [r for r in rows if any(str(c).strip() for c in r)]
                 if not rows:
                     return self._json({"ok": False, "error": "没有读到任何内容"}, 400)
@@ -1495,7 +1638,7 @@ class Handler(BaseHTTPRequestHandler):
                     a["updatedAt"] = now_full()
                     store.add_participant(a, p)      # 热路径：单行 INSERT，不重写整份名单
                     payload = {"participant": p, "count": len(a["participants"])}
-                broadcast("checkin", payload, a["id"])
+                broadcast_event(a, "checkin", payload)
                 broadcast_activity(a)
                 return self._json({"ok": True, **payload})
 
@@ -1518,23 +1661,22 @@ class Handler(BaseHTTPRequestHandler):
                                            % (prize["name"], prize["count"])})
                     pool = a["participants"]
                     if not st.get("allowRepeat"):
-                        done = {w["name"] for w in a["winners"]}
-                        pool = [p for p in pool if p["name"] not in done]
+                        pool = [p for p in pool if not any(winner_matches(w, p) for w in a["winners"])]
                     n = min(int(prize.get("drawCount") or 1), remaining, len(pool))
                     if n <= 0:
                         return self._json({"ok": False, "error": "没有可抽奖的人员，请先导入名单或开启签到"})
-                    picked = random.sample(pool, n)
+                    picked = secrets.SystemRandom().sample(pool, n)
                     draw_id = uid()
                     records = [{
-                        "id": uid(6), "name": p["name"], "empId": p.get("empId", ""),
+                        "id": uid(6), "participantId": p["id"], "name": p["name"], "empId": p.get("empId", ""),
                         "dept": p.get("dept", ""), "phone": p.get("phone", ""),
                         "extra": dict(p.get("extra") or {}),
                         "prize": prize["name"], "prizeId": prize["id"], "time": now_str(), "drawId": draw_id,
                     } for p in picked]
                     a["winners"].extend(records)
                     if st.get("removeOnWin"):
-                        wnames = {r["name"] for r in records}
-                        a["participants"] = [p for p in a["participants"] if p["name"] not in wnames]
+                        winner_ids = {r["participantId"] for r in records}
+                        a["participants"] = [p for p in a["participants"] if p["id"] not in winner_ids]
                     a["updatedAt"] = now_full()
                     save_state_locked()
                     idx = next((i for i, p in enumerate(a["prizes"]) if p["id"] == prize["id"]), None)
@@ -1542,7 +1684,7 @@ class Handler(BaseHTTPRequestHandler):
                     result = {"ok": True, "drawId": draw_id, "winners": records, "prize": prize["name"],
                               "prizeId": prize["id"], "remaining": remaining - n,
                               "nextPrize": ({"id": nxt["id"], "name": nxt["name"]} if nxt else None)}
-                broadcast("draw", result, a["id"])
+                broadcast_event(a, "draw", result)
                 broadcast_activity(a)
                 return self._json(result)
 
@@ -1559,7 +1701,7 @@ class Handler(BaseHTTPRequestHandler):
                     if not name:
                         return self._json({"ok": False, "error": "请输入姓名"})
                     src = next((p for p in a["participants"] if p["name"] == name), None) or {}
-                    rec = {"id": uid(6), "name": name,
+                    rec = {"id": uid(6), "participantId": src.get("id", ""), "name": name,
                            "empId": src.get("empId", ""), "dept": src.get("dept", ""),
                            "phone": src.get("phone", ""), "extra": dict(src.get("extra") or {}),
                            "prize": prize["name"],
@@ -1596,10 +1738,15 @@ class Handler(BaseHTTPRequestHandler):
                     a["winners"] = [w for w in a["winners"] if w.get("drawId") != last]
                     if a["settings"].get("removeOnWin"):
                         for w in removed:
-                            if not any(p["name"] == w["name"] for p in a["participants"]):
+                            participant_id = w.get("participantId") or uid()
+                            exists = (any(p["id"] == participant_id for p in a["participants"])
+                                      if w.get("participantId") else
+                                      any(p["name"] == w["name"] for p in a["participants"]))
+                            if not exists:
                                 a["participants"].append({
-                                    "id": uid(), "name": w["name"], "empId": w.get("empId", ""),
+                                    "id": participant_id, "name": w["name"], "empId": w.get("empId", ""),
                                     "dept": w.get("dept", ""), "phone": w.get("phone", ""),
+                                    "extra": dict(w.get("extra") or {}),
                                     "source": "import", "time": w.get("time", "")})
                     save_state_locked()
                     cnt = len(removed)
@@ -1719,6 +1866,7 @@ def main():
     except KeyboardInterrupt:
         print("\n服务已停止，数据已保存。")
     finally:
+        tunnel_manager.close()
         httpd.server_close()
         store.close()
 

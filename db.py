@@ -20,7 +20,7 @@ import sqlite3
 import threading
 from contextlib import contextmanager
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS winners (
     seq         INTEGER PRIMARY KEY AUTOINCREMENT,
     activity_id TEXT NOT NULL REFERENCES activities(id) ON DELETE CASCADE,
     win_id      TEXT NOT NULL,
+    person_id   TEXT NOT NULL DEFAULT '',
     name        TEXT NOT NULL DEFAULT '',
     emp_id      TEXT NOT NULL DEFAULT '',
     dept        TEXT NOT NULL DEFAULT '',
@@ -130,13 +131,13 @@ def person_dict(r):
 
 
 def winner_row(aid, w):
-    return (aid, _s(w.get("id")), _s(w.get("name")), _s(w.get("empId")),
+    return (aid, _s(w.get("id")), _s(w.get("participantId")), _s(w.get("name")), _s(w.get("empId")),
             _s(w.get("dept")), _s(w.get("phone")), _jdump(w.get("extra"), {}),
             _s(w.get("prize")), _s(w.get("prizeId")), _s(w.get("time")), _s(w.get("drawId")))
 
 
 def winner_dict(r):
-    return {"id": r["win_id"], "name": r["name"], "empId": r["emp_id"],
+    return {"id": r["win_id"], "participantId": r["person_id"], "name": r["name"], "empId": r["emp_id"],
             "dept": r["dept"], "phone": r["phone"],
             "extra": _jload(r["extra_json"], {}), "prize": r["prize"],
             "prizeId": r["prize_id"], "time": r["time"], "drawId": r["draw_id"]}
@@ -173,7 +174,8 @@ def canonical_person(p):
 
 
 def canonical_winner(w):
-    return {"id": _s(w.get("id")), "name": _s(w.get("name")), "empId": _s(w.get("empId")),
+    return {"id": _s(w.get("id")), "participantId": _s(w.get("participantId")),
+            "name": _s(w.get("name")), "empId": _s(w.get("empId")),
             "dept": _s(w.get("dept")), "phone": _s(w.get("phone")),
             "extra": _jload(_jdump(w.get("extra"), {}), {}),
             "prize": _s(w.get("prize")), "prizeId": _s(w.get("prizeId")),
@@ -277,10 +279,17 @@ class Store:
     def init_schema(self):
         self._conn().executescript(SCHEMA)
         with self._tx() as conn:
-            row = conn.execute("SELECT v FROM meta WHERE k='schemaVersion'").fetchone()
-            if not row:
-                conn.execute("INSERT INTO meta(k, v) VALUES('schemaVersion', ?)",
-                             (str(SCHEMA_VERSION),))
+            winner_cols = {r["name"] for r in conn.execute("PRAGMA table_info(winners)")}
+            if "person_id" not in winner_cols:
+                conn.execute("ALTER TABLE winners ADD COLUMN person_id TEXT NOT NULL DEFAULT ''")
+            conn.execute("""UPDATE winners SET person_id=(
+                                SELECT p.person_id FROM participants p
+                                WHERE p.activity_id=winners.activity_id AND p.name=winners.name LIMIT 1)
+                            WHERE person_id='' AND (
+                                SELECT COUNT(*) FROM participants p
+                                WHERE p.activity_id=winners.activity_id AND p.name=winners.name)=1""")
+            conn.execute("INSERT INTO meta(k, v) VALUES('schemaVersion', ?) "
+                         "ON CONFLICT(k) DO UPDATE SET v=excluded.v", (str(SCHEMA_VERSION),))
 
     # ---------------- meta ----------------
 
@@ -372,8 +381,8 @@ class Store:
         conn.execute("DELETE FROM winners WHERE activity_id=?", (aid,))
         if wins:
             conn.executemany(
-                "INSERT INTO winners (activity_id, win_id, name, emp_id, dept, phone, "
-                "extra_json, prize, prize_id, time, draw_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO winners (activity_id, win_id, person_id, name, emp_id, dept, phone, "
+                "extra_json, prize, prize_id, time, draw_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 [winner_row(aid, w) for w in wins])
 
     def _ensure_activity(self, conn, a):

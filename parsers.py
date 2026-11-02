@@ -11,6 +11,7 @@
     - content_disposition   支持中文文件名的下载头
 """
 
+import csv
 import io
 import re
 import zipfile
@@ -152,6 +153,22 @@ def parse_xlsx(data):
     return rows
 
 
+def parse_lines(text):
+    rows = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        delimiter = "\t" if "\t" in line else (";" if ";" in line else ",")
+        try:
+            cells = next(csv.reader([line], delimiter=delimiter))
+        except Exception:
+            cells = re.split(r"[,，\t;；]", line)
+        if len(cells) == 1:
+            cells = re.split(r"[，；]", line)
+        rows.append([c.strip() for c in cells])
+    return rows
+
+
 def parse_text(data):
     text = None
     for enc in ("utf-8-sig", "gbk", "utf-8"):
@@ -162,12 +179,7 @@ def parse_text(data):
             continue
     if text is None:
         text = data.decode("utf-8", "ignore")
-    rows = []
-    for line in text.splitlines():
-        if not line.strip():
-            continue
-        rows.append([c.strip() for c in re.split(r"[,，\t;；]", line)])
-    return rows
+    return parse_lines(text)
 
 
 def detect_header(rows):
