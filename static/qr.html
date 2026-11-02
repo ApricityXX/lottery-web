@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>扫码签到</title>
+<link rel="stylesheet" href="/static/common.css" />
+<style>
+  body { display: flex; min-height: 100vh; padding: 28px; }
+  .wrap { width: 100%; max-width: 640px; margin: auto; text-align: center; }
+  .qr-box {
+    background: #fff; border-radius: 26px; padding: 20px; width: fit-content; margin: 0 auto;
+    box-shadow: var(--sh-3); min-width: 260px; min-height: 260px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .qr-box img, .qr-box canvas { display: block; border-radius: 6px; }
+  .url {
+    margin-top: 20px; font-size: 16px; color: var(--c-gold); word-break: break-all;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 12px 16px;
+  }
+  .stat { margin-top: 18px; font-size: 14px; color: var(--t-2); }
+  .stat b { color: var(--c-gold); font-size: 26px; margin: 0 5px; }
+  .tip { margin-top: 14px; font-size: 14px; color: var(--t-2); line-height: 1.9; }
+  .tip b { color: var(--c-gold); }
+  @media print {
+    body { background: #fff; color: #222; padding: 0; }
+    .no-print { display: none !important; }
+    .qr-box { box-shadow: none; border: 1px solid #ddd; }
+    .url, .stat, .tip { color: #333; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="row between no-print" style="margin-bottom:14px">
+    <select class="select" id="actSel" style="max-width:260px"></select>
+    <div class="btn-row">
+      <a class="btn btn-sm" href="/admin" target="_blank">🎛 管理后台</a>
+      <a class="btn btn-sm" href="/screen" target="_blank">📺 抽奖大屏</a>
+    </div>
+  </div>
+
+  <div class="small dim" id="actName">—</div>
+  <h1 class="h1" style="margin:6px 0 24px;letter-spacing:2px">📱 扫码签到</h1>
+
+  <div id="qrArea">
+    <div class="qr-box" id="qrcode"></div>
+    <div class="url" id="urlText">加载中…</div>
+    <div class="tip" id="tipText"></div>
+    <div class="small dim" id="fieldsTip" style="margin-top:8px"></div>
+    <div class="stat">已签到 <b id="count">0</b> 人</div>
+    <div class="row no-print" style="justify-content:center;margin-top:22px">
+      <button class="btn" id="copyBtn">📋 复制地址</button>
+      <button class="btn" id="printBtn">🖨 打印本页</button>
+      <a class="btn" id="openLink" href="#" target="_blank">🔗 打开签到页</a>
+    </div>
+  </div>
+
+  <div class="empty hidden" id="notice"></div>
+</div>
+
+<script src="/static/qrcode.min.js"></script>
+<script src="/static/qr.js"></script>
+</body>
+</html>

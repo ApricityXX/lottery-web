@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>登录 · 幸运大抽奖管理后台</title>
+<link rel="stylesheet" href="/static/common.css" />
+<link rel="stylesheet" href="/static/login.css" />
+</head>
+<body class="login-page">
+<div class="login-card">
+  <div class="brand">
+    <div class="logo">🎉</div>
+    <h1>幸运大抽奖</h1>
+    <p class="sub" id="brandSub">登录以管理抽奖活动</p>
+  </div>
+
+  <div class="tabs" id="tabs">
+    <div class="tab active" data-m="login">登录</div>
+    <div class="tab" data-m="register">注册</div>
+    <div class="tab" data-m="forgot">找回密码</div>
+  </div>
+
+  <!-- 登录 -->
+  <form id="f-login" class="panel">
+    <div class="field"><label class="lbl">用户名</label>
+      <input class="input" id="loginUser" autocomplete="username" placeholder="3-20 位字母、数字或 _ . - @" /></div>
+    <div class="field"><label class="lbl">密码</label>
+      <input class="input" id="loginPass" type="password" autocomplete="current-password" placeholder="至少 6 位" /></div>
+    <div class="err-text" id="loginErr"></div>
+    <button class="btn btn-primary block" type="submit" id="loginBtn">登录</button>
+  </form>
+
+  <!-- 注册 -->
+  <form id="f-register" class="panel hidden">
+    <div class="field"><label class="lbl">显示名称</label>
+      <input class="input" id="regName" maxlength="20" placeholder="例：市场部 张三" /></div>
+    <div class="field"><label class="lbl">用户名</label>
+      <input class="input" id="regUser" autocomplete="username" placeholder="3-20 位字母、数字或 _ . - @" /></div>
+    <div class="field"><label class="lbl">密码</label>
+      <input class="input" id="regPass" type="password" autocomplete="new-password" placeholder="至少 6 位" /></div>
+    <hr class="sep" />
+    <div class="field"><label class="lbl">安全问题</label>
+      <select class="input" id="regQ"></select></div>
+    <div class="field"><label class="lbl">安全答案</label>
+      <input class="input" id="regA" placeholder="用于自助找回密码" /></div>
+    <div class="err-text" id="regErr"></div>
+    <button class="btn btn-primary block" type="submit" id="regBtn">注册并登录</button>
+    <div class="soft" id="regSoft">注册后将自动登录。普通用户可创建并管理自己的活动；管理员可管理全部活动与用户。</div>
+  </form>
+
+  <!-- 找回密码 -->
+  <form id="f-forgot" class="panel hidden">
+    <div id="forgotStep1">
+      <div class="field"><label class="lbl">用户名</label>
+        <input class="input" id="fUser" placeholder="输入你的用户名" /></div>
+      <div class="err-text" id="fErr1"></div>
+      <button class="btn btn-primary block" type="button" id="fNext">下一步</button>
+    </div>
+    <div id="forgotStep2" class="hidden">
+      <div class="soft" id="fQuestion"></div>
+      <div class="field"><label class="lbl">安全答案</label>
+        <input class="input" id="fAnswer" placeholder="输入安全问题的答案" /></div>
+      <div class="field"><label class="lbl">新密码</label>
+        <input class="input" id="fPass" type="password" placeholder="至少 6 位" /></div>
+      <div class="err-text" id="fErr2"></div>
+      <button class="btn btn-primary block" type="button" id="fReset">重置密码</button>
+      <button class="btn block" type="button" id="fBack">返回</button>
+    </div>
+  </form>
+
+  <div class="foot">
+    <a href="/screen" target="_blank">📺 抽奖大屏</a>
+    <a href="/qr" target="_blank">📱 签到二维码</a>
+  </div>
+</div>
+<div class="toasts" id="toasts"></div>
+<script src="/static/login.js"></script>
+</body>
+</html>

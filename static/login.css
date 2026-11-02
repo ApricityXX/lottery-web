@@ -1,0 +1,52 @@
+/* 登录页（独立首页） */
+.login-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background:
+    radial-gradient(1200px 600px at 15% -10%, rgba(255, 209, 102, .18), transparent 55%),
+    radial-gradient(1000px 700px at 110% 120%, rgba(255, 140, 200, .18), transparent 55%),
+    linear-gradient(160deg, #1a0e2e 0%, #2a1547 55%, #1c1030 100%);
+}
+.login-card {
+  width: 100%;
+  max-width: 380px;
+  background: rgba(255, 255, 255, .06);
+  border: 1px solid var(--line-strong);
+  border-radius: 24px;
+  box-shadow: var(--sh-3);
+  backdrop-filter: blur(16px);
+  padding: 30px 26px 22px;
+}
+.brand { text-align: center; margin-bottom: 14px; }
+.brand .logo { font-size: 46px; line-height: 1; }
+.brand h1 { font-size: 22px; margin: 8px 0 4px; letter-spacing: 2px; }
+.brand .sub { margin: 0; color: var(--t-2); font-size: 13px; }
+
+.login-card .tabs {
+  display: flex; gap: 4px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 18px;
+}
+.login-card .tab {
+  flex: 1; text-align: center; padding: 9px 4px; cursor: pointer;
+  color: var(--t-2); border-bottom: 2px solid transparent; font-size: 14px; user-select: none;
+}
+.login-card .tab:hover { color: var(--t-1); }
+.login-card .tab.active { color: #ffe4ac; border-color: var(--c-gold); font-weight: 600; }
+
+.panel { display: block; }
+.sep { border: none; border-top: 1px dashed var(--line); margin: 14px 0; }
+.soft { margin-top: 12px; font-size: 12px; color: var(--t-3); line-height: 1.7; }
+.block { display: block; width: 100%; margin-top: 6px; }
+.login-card .foot {
+  display: flex; gap: 16px; justify-content: center; margin-top: 16px;
+  padding-top: 14px; border-top: 1px solid var(--line);
+  font-size: 13px;
+}
+.login-card .foot a { color: var(--c-gold); text-decoration: none; }
+.login-card .foot a:hover { text-decoration: underline; }
+
+/* 复用 common.css 的 .field/.input/.btn/.err-text；这里只需补 .tabs/.tab 等 */

@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>幸运大抽奖</title>
+<link rel="stylesheet" href="/static/common.css" />
+<link rel="stylesheet" href="/static/screen.css" />
+</head>
+<body class="stage-wrap">
+<canvas id="confetti" style="position:fixed;inset:0;pointer-events:none;z-index:40"></canvas>
+
+<header class="screen-hd">
+  <div class="brand" id="titleText">幸运大抽奖</div>
+  <div class="right">
+    <span class="tag hidden" id="statusBadge"></span>
+    <span class="tag" id="connBadge">● 连接中…</span>
+    <span class="tag blue" id="countBadge">👥 名单 <b id="countTop">0</b></span>
+    <button class="btn btn-sm" id="muteBtn" title="音效开关">🔔</button>
+    <button class="btn btn-sm" id="fsBtn" title="全屏">⛶</button>
+  </div>
+</header>
+
+<div class="screen-main">
+  <div class="pane">
+    <div class="pane-card">
+      <h3>👥 抽奖名单 <span class="tag" id="countList">0</span></h3>
+      <div class="p-list scroll-y" id="participants"></div>
+    </div>
+  </div>
+
+  <div class="center">
+    <div class="prize-line">
+      <button class="arrow" id="prevPrize" title="上一奖项（←）">‹</button>
+      <span class="pn" id="prizeNameBig">—</span>
+      <button class="arrow" id="nextPrize" title="下一奖项（→）">›</button>
+    </div>
+    <div class="prize-sub" id="prizeSub"></div>
+
+    <div class="name-box" id="nameBox">
+      <div class="name-main" id="nameMain">等待开始</div>
+      <div class="name-sub" id="nameSub">按空格或点击下方按钮开始抽奖</div>
+    </div>
+
+    <div class="row" style="gap:12px">
+      <button class="big-btn" id="drawBtn">🎰 开始抽奖</button>
+      <button class="btn-next hidden" id="gotoNext"></button>
+    </div>
+    <div class="now-chips" id="nowWinners"></div>
+  </div>
+
+  <div class="pane">
+    <div class="pane-card">
+      <h3>🏅 中奖名单 <span class="tag gold" id="countWinners">0</span></h3>
+      <div class="scroll-y" id="winnerArea" style="flex:1"></div>
+    </div>
+  </div>
+</div>
+
+<script src="/static/screen.js"></script>
+</body>
+</html>

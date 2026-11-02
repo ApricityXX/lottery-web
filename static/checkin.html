@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>活动签到</title>
+<link rel="stylesheet" href="/static/common.css" />
+<style>
+  /* 用 margin:auto 居中：内容超过一屏时不会把顶部裁掉（align-items:center 会裁切且无法滚动到顶） */
+  body { display: flex; min-height: 100vh; padding: 22px; }
+  .card { width: 100%; max-width: 400px; margin: auto; text-align: center; padding: 30px 26px 24px;
+          background: rgba(255,255,255,.075); border: 1px solid var(--line-strong);
+          border-radius: 24px; box-shadow: var(--sh-3); backdrop-filter: blur(14px); }
+  .logo { font-size: 44px; line-height: 1; }
+  .ok-anim { font-size: 52px; line-height: 1; animation: pop .5s cubic-bezier(.2,1.4,.4,1); }
+  @keyframes pop { 0% { transform: scale(.4); opacity: 0; } 60% { transform: scale(1.12); } 100% { transform: scale(1); opacity: 1; } }
+  .fields { text-align: left; margin-top: 4px; }
+  .submit { width: 100%; margin-top: 14px; }
+  .foot { margin-top: 20px; font-size: 12.5px; color: var(--t-3); }
+  .foot b { color: var(--c-gold); font-size: 15px; }
+  .done-box { padding: 6px 0 2px; }
+  .done-box .nm { font-size: 20px; font-weight: 800; margin: 6px 0; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo" id="logo">🎊</div>
+  <h1 class="h1" id="actName" style="margin:10px 0 6px">活动签到</h1>
+  <div class="small muted" id="welcome" style="margin-bottom:22px;line-height:1.7">加载中…</div>
+  <div id="formArea"></div>
+  <div class="msg small" id="msg" style="min-height:20px;margin-top:12px"></div>
+  <div class="foot">当前已有 <b id="count">-</b> 人参与</div>
+</div>
+<script src="/static/checkin.js"></script>
+</body>
+</html>

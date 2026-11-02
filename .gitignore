@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Runtime data and backups
+lottery.db
+lottery.db-*
+data.json
+data.json.bak
+*.backup
+
+# Local configuration and secrets
+.env
+.env.*
+
+# OS and editors
+.DS_Store
+.vscode/
+.idea/
