@@ -20,7 +20,7 @@ import sqlite3
 import threading
 from contextlib import contextmanager
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 3  # SQLite 结构版本，与产品版本无关
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (

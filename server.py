@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🎉 幸运大抽奖 v3 · 单机本地服务器（活动化 + 完整管理后台）
+🎉 幸运大抽奖 v1.0 · 单机本地服务器（活动化 + 完整管理后台）
 仅依赖 Python 标准库（Python 3.8+），无需安装任何第三方包。
 
 用法：
@@ -46,6 +46,8 @@ STATIC_DIR = os.path.join(BASE_DIR, "static")
 DB_FILE = os.path.join(BASE_DIR, "lottery.db")          # SQLite 数据库
 DATA_FILE = os.path.join(BASE_DIR, "data.json")         # 旧版 JSON 数据（仅用于首次迁移）
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8000
+APP_VERSION = "1.0"
+BACKUP_FORMAT_VERSION = 3   # 备份结构版本，与产品版本无关
 
 store = db.Store(DB_FILE)
 
@@ -472,7 +474,7 @@ def activity_brief(a):
 
 
 def _load_legacy_json():
-    """把旧版 data.json（v3 / v1）读进内存 state（尚未落库）"""
+    """把旧版 data.json（活动结构 / 早期名单结构）读进内存 state（尚未落库）"""
     try:
         with open(DATA_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -499,7 +501,7 @@ def _load_legacy_json():
         if not state["users"] and state["activities"]:
             print("提示：尚无账号，第一个注册的账号将自动成为管理员")
         return
-    if "participants" in data or "winners" in data:   # v1 迁移
+    if "participants" in data or "winners" in data:   # 早期名单结构迁移
         st = dict(DEFAULT_SETTINGS)
         st.update(data.get("settings") or {})
         act = new_activity("默认活动", settings=st)
@@ -618,7 +620,7 @@ tunnel_manager = tunnel.TunnelManager(PORT, on_tunnel_change)
 # ---------------- HTTP ----------------
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "LotteryServer/3.0"
+    server_version = "LotteryServer/" + APP_VERSION
 
     def log_message(self, fmt, *args):
         sys.stderr.write("[%s] %s\n" % (self.log_date_time_string(), fmt % args))
@@ -890,7 +892,9 @@ class Handler(BaseHTTPRequestHandler):
             if self._need_admin():
                 return
             with state_lock:
-                body = json.dumps({"version": 3, "exportedAt": now_full(), **state},
+                body = json.dumps({"appVersion": APP_VERSION,
+                                   "formatVersion": BACKUP_FORMAT_VERSION,
+                                   "exportedAt": now_full(), **state},
                                   ensure_ascii=False, indent=2).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -1920,7 +1924,7 @@ def main():
     httpd = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     print()
     print("=" * 58)
-    print("  🎉 幸运大抽奖 v3 已启动（Python 标准库，零第三方依赖）")
+    print("  🎉 幸运大抽奖 v%s 已启动（Python 标准库，零第三方依赖）" % APP_VERSION)
     print()
     print("  登录页     :  http://%s:%d/            （首页，必须登录）" % (LAN_IP, PORT))
     print("  管理后台   :  http://%s:%d/admin" % (LAN_IP, PORT))

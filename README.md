@@ -1,6 +1,10 @@
 # 幸运大抽奖
 
+![版本](https://img.shields.io/badge/version-v1.0-2ea44f)
+
 一个适合年会、班会、门店和团建活动的抽奖系统。只需一台电脑和 Python，即可管理活动与名单、手机扫码签到，并在大屏上实时抽奖。无需单独安装数据库，也不依赖第三方 Python 包。
+
+![抽奖大屏](docs/screenshot.png)
 
 ## 功能
 
@@ -101,6 +105,7 @@ lottery-web/
 ├── parsers.py             # 名单解析与 Excel 模板生成
 ├── tunnel.py              # ngrok 远程签到管理
 ├── static/                # 管理后台、大屏、签到与二维码页面
+├── docs/screenshot.png    # README 页面截图
 ├── lottery.db             # 运行数据（自动生成）
 └── README.md
 ```
