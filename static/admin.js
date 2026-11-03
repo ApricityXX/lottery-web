@@ -14,6 +14,11 @@ function esc(v) {
   }[c]));
 }
 function fmtTime(t) { return t || "—"; }
+function personName(p) { return (p && (p.name || p.empId || p.phone)) || "未命名人员"; }
+function personLabel(p) {
+  const id = p && (p.participantId || p.id);
+  return personName(p) + (id ? " #" + id : "");
+}
 
 const AUTH_FREE = ["/api/login", "/api/register", "/api/logout", "/api/change-password",
                    "/api/forgot-password", "/api/reset-password"];
@@ -187,7 +192,9 @@ async function loadActs() {
   const d = await apiGet("/api/activities");
   if (d.ok) {
     S.acts = d.activities || [];
-    S.curId = d.currentActivityId;
+    if (!S.curId || !S.acts.some(a => a.id === S.curId)) {
+      S.curId = d.currentActivityId || (S.acts[0] || {}).id || null;
+    }
   }
   renderShell();
 }
@@ -206,23 +213,19 @@ function renderShell() {
     : `<option value="">暂无活动</option>`;
   if (keep && S.acts.some(a => a.id === keep)) sel.value = keep;
   else if (S.curId) sel.value = S.curId;
-  const cur = S.acts.find(a => a.id === S.curId);
-  $("#sideCur").textContent = "当前活动：" + (cur ? cur.name : "—");
   $("#btnScreen").href = S.curId ? "/screen?activity=" + S.curId : "/screen";
   $("#btnQr").href = S.curId ? "/qr?activity=" + S.curId : "/qr";
   const hash = location.hash || "#/dashboard";
   $$(".nav-item").forEach(n => n.classList.toggle("active", hash.startsWith(n.getAttribute("href"))));
 }
-$("#globalAct").addEventListener("change", async () => {
+$("#globalAct").addEventListener("change", () => {
   const id = $("#globalAct").value;
   if (!id) return;
-  const r = await apiPost("/api/activity/" + id + "/activate", {});
-  if (r.ok) {
-    S.curId = id;
-    toast("已切换到「" + (S.acts.find(a => a.id === id) || {}).name + "」", "ok");
-    await loadActs();
-    route();
-  }
+  S.curId = id;
+  renderShell();
+  const target = "#/activity/" + id + "/overview";
+  if (location.hash === target) route();
+  else location.hash = target;
 });
 
 /* ---------------- 路由 ---------------- */
@@ -237,6 +240,8 @@ async function route() {
   if (r.name === "dashboard") { await viewDashboard(); renderCrumb(["仪表盘"]); }
   else if (r.name === "activities") { await viewActivities(); renderCrumb(["抽奖活动"]); }
   else if (r.name === "activity" && r.id) {
+    S.curId = r.id;
+    renderShell();
     const ok = await loadAct(r.id);
     if (!ok) { view.innerHTML = `<div class="empty"><div class="ico">🔍</div><div class="t">活动不存在</div></div>`; return; }
     S.tab = r.tab;
@@ -286,8 +291,6 @@ async function viewDashboard() {
       </div>
       <div class="btn-row">
         <button class="btn btn-primary" id="quickNew">＋ 新建活动</button>
-        ${S.curId ? `<a class="btn" href="/screen?activity=${S.curId}" target="_blank">📺 打开大屏</a>
-        <a class="btn" href="/qr?activity=${S.curId}" target="_blank">📱 签到二维码</a>` : ""}
       </div>
     </div>
 
@@ -298,10 +301,10 @@ async function viewDashboard() {
       ${statCard("🏅", d.winners, "中奖人次")}
     </div>
 
-    <div class="grid grid-2">
+    <div class="grid grid-2 dashboard-bottom">
       <div class="card">
         <div class="card-hd">
-          <h3>🎯 当前活动</h3>
+          <h3>🎯 最近活动</h3>
           ${cur ? `<a class="btn btn-sm" href="#/activity/${cur.id}/overview">进入管理</a>` : ""}
         </div>
         ${cur ? `
@@ -322,12 +325,12 @@ async function viewDashboard() {
         <div class="card-hd"><h3>🕘 最近动态</h3></div>
         ${d.recentParticipants && d.recentParticipants.length ? `
           <div class="small dim" style="margin-bottom:8px">最近加入名单</div>
-          ${d.recentParticipants.map(p => `<div class="kv"><span>${esc(p.name)}${p.dept ? " · " + esc(p.dept) : ""}</span><span class="dim">${SOURCE[p.source] || ""} ${esc(p.time)}</span></div>`).join("")}
+          ${d.recentParticipants.map(p => `<div class="kv"><span>${esc(personLabel(p))}${p.dept ? " · " + esc(p.dept) : ""}</span><span class="dim">${SOURCE[p.source] || ""} ${esc(p.time)}</span></div>`).join("")}
         ` : `<div class="small dim">暂无名单</div>`}
         <div class="divider"></div>
         ${d.recentWinners && d.recentWinners.length ? `
           <div class="small dim" style="margin-bottom:8px">最近中奖</div>
-          ${d.recentWinners.map(w => `<div class="kv"><span>🏆 ${esc(w.prize)} · <b>${esc(w.name)}</b></span><span class="dim">${esc(w.time)}</span></div>`).join("")}
+          ${d.recentWinners.map(w => `<div class="kv"><span>🏆 ${esc(w.prize)} · <b>${esc(personLabel(w))}</b></span><span class="dim">${esc(w.time)}</span></div>`).join("")}
         ` : `<div class="small dim">暂无中奖记录</div>`}
       </div>
     </div>`;
@@ -363,7 +366,7 @@ async function viewActivities() {
     <div class="page-hd">
       <div>
         <div class="title">🎪 抽奖活动</div>
-        <div class="sub">共 ${S.acts.length} 个活动，每个活动独立配置奖项、名单与中奖记录</div>
+        <div class="sub">共 ${S.acts.length} 个活动，可同时开启，签到、奖项与中奖记录互不影响</div>
       </div>
       <button class="btn btn-primary" id="newAct">＋ 新建活动</button>
     </div>
@@ -378,14 +381,12 @@ async function viewActivities() {
           <option value="ended"${st === "ended" ? " selected" : ""}>已结束</option>
         </select>
         <span class="grow"></span>
-        <span class="small dim">当前抽奖活动：<b style="color:var(--c-gold)">${esc((S.acts.find(a => a.id === S.curId) || {}).name || "未设置")}</b></span>
       </div>
 
       ${list.length ? `<div class="grid grid-auto">${list.map(a => `
-        <div class="act-card ${a.id === S.curId ? "is-current" : ""}">
+        <div class="act-card">
           <div class="nm">${esc(a.name)}
             <span class="tag ${(STATUS[a.status] || STATUS.active).cls}">${(STATUS[a.status] || STATUS.active).label}</span>
-            ${a.id === S.curId ? `<span class="tag gold">当前</span>` : ""}
           </div>
           ${a.note ? `<div class="small dim">${esc(a.note)}</div>` : ""}
           <div class="prizes">${a.prizes.map(p => `<span class="tag">${esc(p.name)} ${p.won}/${p.count}</span>`).join("") || `<span class="tag gray">未配置奖项</span>`}</div>
@@ -400,10 +401,7 @@ async function viewActivities() {
       : ""}
           <div class="btn-row" style="margin-top:2px">
             <a class="btn btn-sm btn-primary" href="#/activity/${a.id}/overview">管理</a>
-            ${a.id !== S.curId ? `<button class="btn btn-sm" data-act="cur" data-id="${a.id}">设为当前</button>` : ""}
             <button class="btn btn-sm" data-act="copy" data-id="${a.id}">复制</button>
-            <a class="btn btn-sm" href="/screen?activity=${a.id}" target="_blank">大屏</a>
-            <a class="btn btn-sm" href="/qr?activity=${a.id}" target="_blank">二维码</a>
             <button class="btn btn-sm btn-danger" data-act="del" data-id="${a.id}">删除</button>
           </div>
         </div>`).join("")}</div>`
@@ -417,10 +415,7 @@ async function viewActivities() {
   $$("[data-act]", view).forEach(b => {
     b.onclick = async () => {
       const id = b.dataset.id, op = b.dataset.act;
-      if (op === "cur") {
-        await apiPost("/api/activity/" + id + "/activate", {});
-        toast("已设为当前活动", "ok"); await loadActs(); viewActivities();
-      } else if (op === "copy") {
+      if (op === "copy") {
         const r = await apiPost("/api/activity/" + id + "/duplicate", {});
         if (r.ok) { toast("已复制活动（名单已复制，中奖记录清空）", "ok"); await loadActs(); viewActivities(); }
       } else if (op === "del") {
@@ -446,13 +441,13 @@ function activityFormHtml(a) {
     name: "", note: "", status: "active",
     prizes: [{ name: "一等奖", count: 1, drawCount: 1 }, { name: "二等奖", count: 2, drawCount: 1 }, { name: "三等奖", count: 3, drawCount: 3 }],
     settings: { allowRepeat: false, dedupeName: true, removeOnWin: false, rollSeconds: 3, sound: true, confetti: true, showCount: true, showWinnerWall: true },
-    checkin: { enabled: true, mode: "lan", publicBaseUrl: "", tunnelDomain: "", welcome: "输入姓名即可加入抽奖名单", fields: [{ key: "name", label: "姓名", required: true }] }
+    checkin: { enabled: true, mode: "tunnel", publicBaseUrl: "", tunnelDomain: "", welcome: "输入姓名即可加入抽奖名单", fields: [{ key: "name", label: "姓名", required: true }] }
   };
   const s = d.settings, c = d.checkin;
   const sc = d.schedule || { enabled: false, startAt: "", endAt: "" };
   const f = k => (c.fields || []).find(x => x.key === k);
   const chk = (k, on) => `<label class="switch"><input type="checkbox" data-k="${k}"${on ? " checked" : ""}><span>${k === "allowRepeat" ? "允许重复中奖（已中奖者可再次参与）" :
-    k === "dedupeName" ? "名单去重（同名只保留一条）" :
+    k === "dedupeName" ? "名单去重（所有签到字段都相同才跳过）" :
       k === "removeOnWin" ? "中奖后移出名单" :
         k === "sound" ? "中奖音效" :
           k === "confetti" ? "彩带特效" :
@@ -556,7 +551,7 @@ function activityFormHtml(a) {
         <label class="lbl">签到页欢迎语</label>
         <input class="input" id="cWelcome" maxlength="60" value="${esc(c.welcome || "")}" />
       </div>
-      <label class="lbl">签到填写项（姓名固定必填，其它字段可自定义增删）</label>
+      <label class="lbl">签到填写项（至少保留一个字段，并设置一个必填项）</label>
       <div id="fieldsBox" style="display:flex;flex-direction:column;gap:8px">
         ${(c.fields || []).map(fd => fieldRow(fd)).join("")}
       </div>
@@ -580,18 +575,22 @@ function prizeRow(p) {
     <td><input class="input" data-p="name" value="${esc(p.name)}" maxlength="20" data-id="${p.id || ""}" /></td>
     <td><input class="input" data-p="count" type="number" min="1" max="999" value="${p.count || 1}" style="width:86px" /></td>
     <td><input class="input" data-p="drawCount" type="number" min="1" max="99" value="${p.drawCount || 1}" style="width:86px" /></td>
-    <td class="col-act"><button class="btn btn-sm btn-danger" data-pdel>删除</button></td>
+    <td class="col-act"><div class="btn-row">
+      <button class="btn btn-sm" data-pup title="上移奖项">↑</button>
+      <button class="btn btn-sm" data-pdown title="下移奖项">↓</button>
+      <button class="btn btn-sm btn-danger" data-pdel>删除</button>
+    </div></td>
   </tr>`;
 }
 function fieldRow(fd) {
-  const locked = fd.key === "name";
+  const builtin = ["name", "empId", "dept", "phone"].includes(fd.key);
   return `<div class="row" data-frow style="gap:10px;border:1px solid var(--line);border-radius:12px;padding:10px 12px">
     <input class="input" data-fk data-key="${esc(fd.key)}" value="${esc(fd.label)}" maxlength="12"
-           placeholder="字段名" style="max-width:140px"${locked ? " disabled" : ""} />
-    <span class="small dim nowrap">${locked ? "固定字段" : "自定义 · " + esc(fd.key)}</span>
+           placeholder="字段名" style="max-width:140px" />
+    <span class="small dim nowrap">${builtin ? "内置字段" : "自定义 · " + esc(fd.key)}</span>
     <span class="grow"></span>
-    <label class="cbx"><input type="checkbox" data-freq${fd.required ? " checked" : ""}${locked ? " disabled" : ""}><span>必填</span></label>
-    ${locked ? `<span class="tag gray">不可删除</span>` : `<button class="btn btn-sm btn-danger" data-fdel>删除</button>`}
+    <label class="cbx"><input type="checkbox" data-freq${fd.required ? " checked" : ""}><span>必填</span></label>
+    <button class="btn btn-sm btn-danger" data-fdel>删除</button>
   </div>`;
 }
 
@@ -656,11 +655,24 @@ function syncPublic(root) {
   $("#fTunnelWrap", root).style.display = m === "tunnel" ? "" : "none";
 }
 function bindPrizeRows(root) {
-  $$("[data-pdel]", root).forEach(b => {
-    b.onclick = () => {
-      const rows = $$("#prizeRows tr", root);
-      if (rows.length <= 1) { toast("至少保留一个奖项", "warn"); return; }
-      b.closest("tr").remove();
+  const rows = $$("#prizeRows tr", root);
+  rows.forEach((row, i) => {
+    const up = row.querySelector("[data-pup]");
+    const down = row.querySelector("[data-pdown]");
+    up.disabled = i === 0;
+    down.disabled = i === rows.length - 1;
+    up.onclick = () => {
+      if (row.previousElementSibling) row.parentNode.insertBefore(row, row.previousElementSibling);
+      bindPrizeRows(root);
+    };
+    down.onclick = () => {
+      if (row.nextElementSibling) row.parentNode.insertBefore(row.nextElementSibling, row);
+      bindPrizeRows(root);
+    };
+    row.querySelector("[data-pdel]").onclick = () => {
+      if ($$("#prizeRows tr", root).length <= 1) { toast("至少保留一个奖项", "warn"); return; }
+      row.remove();
+      bindPrizeRows(root);
     };
   });
 }
@@ -678,9 +690,16 @@ function readForm(root) {
     const inp = r.querySelector("[data-fk]");
     if (!inp) return;
     const key = inp.dataset.key;
-    fields.push({ key, label: inp.value.trim() || key, required: r.querySelector("[data-freq]").checked || key === "name" });
+    fields.push({ key, label: inp.value.trim() || key, required: r.querySelector("[data-freq]").checked });
   });
-  if (!fields.length) fields.push({ key: "name", label: "姓名", required: true });
+  if (!fields.length) {
+    toast("请至少保留一个签到字段", "warn");
+    return null;
+  }
+  if (!fields.some(f => f.required)) {
+    toast("请至少设置一个必填签到字段", "warn");
+    return null;
+  }
   const out = {
     name,
     prizes,
@@ -757,15 +776,11 @@ async function viewActivity() {
   view.innerHTML = `
     <div class="page-hd">
       <div>
-        <div class="title">${esc(a.name)} <span class="tag ${st.cls}">${st.label}</span>
-          ${a.id === S.curId ? `<span class="tag gold">当前活动</span>` : ""}</div>
+        <div class="title">${esc(a.name)} <span class="tag ${st.cls}">${st.label}</span></div>
         <div class="sub">创建于 ${esc(a.createdAt)} · 更新于 ${esc(a.updatedAt)}${a.note ? " · " + esc(a.note) : ""}</div>
         ${schedText ? `<div class="small" style="color:var(--c-gold);margin-top:4px">${schedText} · 服务器当前时间 ${esc(a.serverNow || "")}</div>` : ""}
       </div>
       <div class="btn-row">
-        ${a.id !== S.curId ? `<button class="btn" id="btnCur">设为当前</button>` : ""}
-        <button class="btn" id="btnScreen2">📺 打开大屏</button>
-        <button class="btn" id="btnQr2">📱 签到二维码</button>
         <button class="btn" id="btnEdit">✏️ 编辑</button>
         <button class="btn" id="btnCopy">📄 复制</button>
         <button class="btn btn-danger" id="btnDel">删除</button>
@@ -783,12 +798,6 @@ async function viewActivity() {
     t.onclick = () => { location.hash = `#/activity/${a.id}/${t.dataset.tab}`; };
   });
   $("#btnEdit").onclick = () => openActivityModal(a);
-  $("#btnScreen2").onclick = () => window.open("/?activity=" + a.id, "_blank");
-  $("#btnQr2").onclick = () => window.open("/qr?activity=" + a.id, "_blank");
-  if ($("#btnCur")) $("#btnCur").onclick = async () => {
-    await apiPost("/api/activity/" + a.id + "/activate", {});
-    toast("已设为当前活动", "ok"); await loadActs(); await loadAct(a.id); viewActivity();
-  };
   $("#btnCopy").onclick = async () => {
     const r = await apiPost("/api/activity/" + a.id + "/duplicate", {});
     if (r.ok) { toast("已复制（名单保留，中奖记录清空）", "ok"); await loadActs(); location.hash = "#/activities"; }
@@ -840,7 +849,6 @@ async function renderOverview() {
           <div class="kv"><span>填写项</span><span>${(a.checkin.fields || []).map(f => esc(f.label) + (f.required ? "*" : "")).join("、")}</span></div>
           <div class="kv"><span>已签到</span><span>${a.counts.participants} 人</span></div>
           <div class="btn-row" style="margin-top:14px">
-            <button class="btn btn-primary" id="openQr">打开二维码页</button>
             <button class="btn" id="copyUrl"${url.url ? "" : " disabled"}>📋 复制地址</button>
             <a class="btn" href="/checkin?activity=${a.id}" target="_blank">预览签到页</a>
           </div>
@@ -849,7 +857,6 @@ async function renderOverview() {
         ` : `<div class="empty"><div class="ico">📵</div><div class="t">本活动未开放扫码签到</div><div class="d">名单请到「名单」页批量导入</div></div>`}
       </div>
     </div>`;
-  if ($("#openQr")) $("#openQr").onclick = () => window.open("/qr?activity=" + a.id, "_blank");
   if ($("#copyUrl")) $("#copyUrl").onclick = () => {
     const t = url.url || "";
     if (navigator.clipboard) navigator.clipboard.writeText(t);
@@ -987,7 +994,7 @@ function renderPeople() {
   } else {
     tbody.innerHTML = p.items.map(x => `<tr>
       <td><label class="cbx"><input type="checkbox" class="selOne" value="${x.id}"${S.sel.has(x.id) ? " checked" : ""}></label></td>
-      <td class="cell-main">${esc(x.name)}${x.won && !(x.wonPrizes || []).length ? ` <span class="tag gold">已中奖</span>` : ""}</td>
+      <td class="cell-main">${esc(personLabel(x))}${x.won && !(x.wonPrizes || []).length ? ` <span class="tag gold">已中奖</span>` : ""}</td>
       ${cols.map(c => `<td>${esc(pval(x, c.key) || "—")}</td>`).join("")}
       <td>${(x.wonPrizes || []).length
         ? x.wonPrizes.map(z => `<span class="tag gold">🏆 ${esc(z)}</span>`).join(" ")
@@ -1046,7 +1053,7 @@ function renderPeople() {
   });
   $$("[data-del]", tbody).forEach(b => b.onclick = async () => {
     const x = p.items.find(i => i.id === b.dataset.del);
-    if (await confirmBox(`确定删除「<b>${esc(x ? x.name : "")}</b>」？`, { danger: true, okText: "删除" })) {
+    if (await confirmBox(`确定删除「<b>${esc(x ? personLabel(x) : "")}</b>」？`, { danger: true, okText: "删除" })) {
       await apiPost("/api/activity/" + S.act.id + "/remove", { id: b.dataset.del });
       toast("已删除"); reload();
     }
@@ -1058,11 +1065,14 @@ function renderPeople() {
 function openPersonModal(person) {
   const p = person || { name: "", dept: "", empId: "", phone: "", extra: {} };
   const cols = peopleColumns();
+  const nameField = ((S.act.checkin && S.act.checkin.fields) || []).find(f => f.key === "name");
+  const nameRequired = !!(nameField && nameField.required);
   modal({
     title: person ? "编辑人员" : "添加人员",
     body: `
-      <div class="field"><label class="lbl">姓名 <span class="req">*</span></label>
-        <input class="input" id="pn" value="${esc(p.name)}" maxlength="30" /><div class="err-text" id="en">请输入姓名</div></div>
+      <div class="field"><label class="lbl">姓名${nameRequired ? ' <span class="req">*</span>' : ""}</label>
+        <input class="input" id="pn" data-req="${nameRequired ? "1" : ""}" value="${esc(p.name)}" maxlength="30" />
+        ${nameRequired ? `<div class="err-text" data-err="name">请填写「姓名」</div>` : ""}</div>
       <div class="grid grid-2" style="gap:12px">
         ${cols.map(c => `<div class="field"><label class="lbl">${esc(c.label)}${c.required ? ' <span class="req">*</span>' : ""}</label>
           <input class="input" data-pk="${esc(c.key)}" data-req="${c.required ? "1" : ""}" value="${esc(pval(p, c.key))}" maxlength="30" />
@@ -1073,11 +1083,11 @@ function openPersonModal(person) {
     onMount(wrap, close) {
       $("#saveP", wrap).onclick = async () => {
         const name = $("#pn", wrap).value.trim();
-        if (!name) { $("#en", wrap).classList.add("show"); return; }
         let bad = false;
         $$("[data-req='1']", wrap).forEach(inp => {
+          const key = inp.id === "pn" ? "name" : inp.dataset.pk;
           const ok = inp.value.trim() !== "";
-          const e = wrap.querySelector('[data-err="' + inp.dataset.pk + '"]');
+          const e = wrap.querySelector('[data-err="' + key + '"]');
           if (e) e.classList.toggle("show", !ok);
           if (!ok) bad = true;
         });
@@ -1120,12 +1130,12 @@ function openImportModal() {
         return flds.filter(f => f.key === "name").concat(flds.filter(f => f.key !== "name"));
       }
       function reqFields() {
-        return actFields().filter(f => f.required || f.key === "name");
+        return actFields().filter(f => f.required);
       }
       function step1() {
         const ordered = actFields();
         const req = reqFields();
-        const opt = ordered.filter(f => !f.required && f.key !== "name");
+        const opt = ordered.filter(f => !f.required);
         const reqNames = req.map(f => `<b>${esc(f.label)}</b>`).join("、");
         const sample = { name: "张三", dept: "市场部", empId: "E1001", phone: "13800000000" };
         return stepsHtml(1) + `
@@ -1142,9 +1152,9 @@ function openImportModal() {
             </div>
             <div class="table-wrap" style="margin-top:12px">
               <table class="tbl imp-table">
-                <thead><tr>${ordered.map(f => `<th>${esc(f.label)}${f.required || f.key === "name" ? ' <span class="req">*</span>' : ""}</th>`).join("")}</tr></thead>
+                <thead><tr>${ordered.map(f => `<th>${esc(f.label)}${f.required ? ' <span class="req">*</span>' : ""}</th>`).join("")}</tr></thead>
                 <tbody><tr>${ordered.map(f => {
-                  const need = f.required || f.key === "name";
+                  const need = f.required;
                   return `<td style="color:var(--t-3)">${need ? esc(sample[f.key] || "示例") : "（可留空）"}</td>`;
                 }).join("")}</tr></tbody>
               </table>
@@ -1161,7 +1171,7 @@ function openImportModal() {
           <div class="field">
             <label class="lbl">方式二：粘贴名单</label>
             <textarea class="input" id="impText" rows="6" placeholder="每行一个，可用逗号/制表符分隔：&#10;张三&#10;李四,市场部&#10;王五,技术部,13800000000"></textarea>
-            <div class="hint">姓名不能为空；第一行为表头时会自动识别。</div>
+            <div class="hint">带 * 的必填项不能为空；第一行为表头时会自动识别。</div>
           </div>`;
       }
       function bind1() {
@@ -1205,7 +1215,7 @@ function openImportModal() {
             </table>
           </div>
           <div class="imp-map">
-            <div><label class="lbl">姓名列 <span class="req">*</span></label><select class="select" id="mName">${opt("name")}</select></div>
+            <div><label class="lbl">姓名列${actFields().find(f => f.key === "name" && f.required) ? ' <span class="req">*</span>' : ""}</label><select class="select" id="mName">${opt("name")}</select></div>
             ${actFields().filter(f => f.key !== "name")
       .map(f => `<div><label class="lbl">${esc(f.label)}列${f.required ? ' <span class="req">*</span>' : ""}</label>
               <select class="select" data-mk="${esc(f.key)}">${opt(f.key)}</select></div>`).join("")}
@@ -1228,7 +1238,7 @@ function openImportModal() {
         const noCol = [], blanks = [];
         reqs.forEach(f => {
           const sel = selOf(f.key);
-          if (!sel || sel.value === "") { if (f.key !== "name") noCol.push(f.label); return; }
+          if (!sel || sel.value === "") { noCol.push(f.label); return; }
           const idx = parseInt(sel.value, 10);
           const n = data.filter(r => !String(r[idx] == null ? "" : r[idx]).trim()).length;
           if (n) blanks.push({ label: f.label, n });
@@ -1258,10 +1268,10 @@ function openImportModal() {
         updateWarn();
         $("#impNext", wrap).onclick = async () => {
           const ni = $("#mName", wrap).value;
-          if (ni === "") { toast("请选择姓名列", "warn"); return; }
           const { noCol } = checkRequired();
           if (noCol.length) { toast("请先为必填字段「" + noCol.join("、") + "」选择对应列", "warn"); return; }
-          const mapping = { name: parseInt(ni, 10) };
+          const mapping = {};
+          if (ni !== "") mapping.name = parseInt(ni, 10);
           $$("[data-mk]", wrap).forEach(sel => {
             if (sel.value !== "") mapping[sel.dataset.mk] = parseInt(sel.value, 10);
           });
@@ -1326,7 +1336,7 @@ function renderDraw() {
         ${S.lastDraw ? `
           <div class="result-box">
             <div class="pr">🏆 ${esc(S.lastDraw.prize)}</div>
-            <div class="names">${S.lastDraw.winners.map(w => esc(w.name)).join(" 、 ")}</div>
+            <div class="names">${S.lastDraw.winners.map(w => esc(personLabel(w))).join(" 、 ")}</div>
             <div class="cap">${S.lastDraw.winners.map(w => w.dept ? esc(w.dept) : "").filter(Boolean).join(" · ")}</div>
           </div>
           <div class="row" style="margin-top:12px">
@@ -1334,13 +1344,6 @@ function renderDraw() {
             ${S.lastDraw.nextPrize ? `<button class="btn btn-sm" id="nextPrizeBtn">下一奖项：${esc(S.lastDraw.nextPrize.name)} →</button>` : `<span class="tag green">全部奖项抽完</span>`}
           </div>
         ` : `<div class="empty"><div class="ico">🎰</div><div class="t">还没有抽奖</div><div class="d">选择奖项后点击「开始抽奖」</div></div>`}
-        <div class="divider"></div>
-        <div class="card-hd" style="margin-bottom:8px"><h3 class="h3">🖥 大屏</h3></div>
-        <div class="hint">大屏地址：<a href="/screen?activity=${a.id}" target="_blank">/screen${"?activity=" + a.id}</a>　·　按空格或点按钮抽奖，← → 切换奖项</div>
-        <div class="btn-row" style="margin-top:10px">
-          <button class="btn btn-primary" id="openScreen">📺 打开大屏</button>
-          <a class="btn" href="/qr?activity=${a.id}" target="_blank">📱 签到二维码</a>
-        </div>
       </div>
     </div>
 
@@ -1348,7 +1351,7 @@ function renderDraw() {
       <div class="card-hd"><h3>🏅 中奖者墙</h3><span class="desc">共 ${a.counts.winners} 人</span></div>
       ${a.winners.length ? `<div class="wall">
         ${a.winners.slice().reverse().map(w => `<div class="wall-item">
-          <div class="n">${esc(w.name)}</div><div class="p">${esc(w.prize)}</div><div class="t">${esc(w.time)}</div>
+          <div class="n">${esc(personLabel(w))}</div><div class="p">${esc(w.prize)}</div><div class="t">${esc(w.time)}</div>
         </div>`).join("")}</div>` : `<div class="empty"><div class="ico">🏅</div><div class="t">还没有中奖者</div></div>`}
     </div>`;
 
@@ -1364,7 +1367,7 @@ function renderDraw() {
     btn.disabled = false; btn.textContent = "🎰 开始抽奖";
     if (!r.ok) { toast(r.error || "抽奖失败", "err"); return; }
     S.lastDraw = r;
-    toast(`🎊 ${r.winners.map(w => w.name).join("、")} 获得 ${r.prize}`, "ok");
+    toast(`🎊 ${r.winners.map(w => personLabel(w)).join("、")} 获得 ${r.prize}`, "ok");
     await loadAct(a.id); renderDraw();
   };
   if ($("#undoDraw")) $("#undoDraw").onclick = async () => {
@@ -1380,7 +1383,6 @@ function renderDraw() {
     S.lastDraw = null;
     await loadAct(a.id); renderDraw();
   };
-  $("#openScreen").onclick = () => window.open("/?activity=" + a.id, "_blank");
 }
 function eligibleCount() {
   const a = S.act;
@@ -1416,7 +1418,7 @@ function renderWinners() {
             <table class="tbl">
               <thead><tr><th>姓名</th><th>部门</th><th>手机号</th><th>中奖时间</th><th class="col-act">操作</th></tr></thead>
               <tbody>${map[name].map(w => `<tr>
-                <td class="cell-main">${esc(w.name)}</td>
+                <td class="cell-main">${esc(personLabel(w))}</td>
                 <td>${esc(w.dept || "—")}</td>
                 <td>${esc(w.phone || "—")}</td>
                 <td class="dim">${esc(w.time)}</td>
@@ -1453,16 +1455,17 @@ function openWinnerModal() {
     body: `
       <div class="field"><label class="lbl">奖项</label>
         <select class="select" id="wp">${a.prizes.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join("")}</select></div>
-      <div class="field"><label class="lbl">姓名 <span class="req">*</span></label>
-        <input class="input" id="wn" placeholder="输入姓名（名单内已有则自动带出部门）" />
-        <div class="err-text" id="ewn">请输入姓名</div></div>
-      <div class="hint">适用于线下补抽、遗漏登记等场景。</div>`,
+      <div class="field"><label class="lbl">中奖人员 <span class="req">*</span></label>
+        <select class="select" id="wn"><option value="">请选择名单人员</option>
+          ${a.participants.map(p => `<option value="${p.id}">${esc(personLabel(p))}${p.dept ? " · " + esc(p.dept) : ""}</option>`).join("")}</select>
+        <div class="err-text" id="ewn">请选择中奖人员</div></div>
+      <div class="hint">同名人员通过 # 编号区分，选择后会自动带出人员信息。</div>`,
     footer: `<button class="btn" data-close>取消</button><button class="btn btn-primary" id="saveW">添加</button>`,
     onMount(wrap, close) {
       $("#saveW", wrap).onclick = async () => {
-        const name = $("#wn", wrap).value.trim();
-        if (!name) { $("#ewn", wrap).classList.add("show"); return; }
-        const r = await apiPost("/api/activity/" + a.id + "/winner/add", { name, prizeId: $("#wp", wrap).value });
+        const participantId = $("#wn", wrap).value;
+        if (!participantId) { $("#ewn", wrap).classList.add("show"); return; }
+        const r = await apiPost("/api/activity/" + a.id + "/winner/add", { participantId, prizeId: $("#wp", wrap).value });
         if (r.ok) { toast("已补录", "ok"); close(); await loadAct(a.id); renderWinners(); }
         else toast(r.error || "添加失败", "err");
       };
@@ -1485,6 +1488,7 @@ function renderSettingsTab() {
   bindForm($("#setForm"));
   $("#saveSet").onclick = async () => {
     const data = readForm($("#setForm"));
+    if (!data) return;
     if (!data.name) { toast("请填写活动名称", "err"); return; }
     const r = await apiPost("/api/activity/" + a.id + "/update", data);
     if (r.ok) { toast("设置已保存", "ok"); await loadActs(); await loadAct(a.id); viewActivity(); }
@@ -1543,7 +1547,7 @@ async function viewSettings() {
       <div class="card adminOnly">
         <div class="card-hd"><h3>🧨 危险操作</h3></div>
         <div class="kv"><span>清空所有活动数据</span><button class="btn btn-sm btn-danger" id="wipe">清空</button></div>
-        <div class="kv"><span>清空当前活动中奖记录</span><button class="btn btn-sm btn-danger" id="wipeWin">清空</button></div>
+        <div class="kv"><span>清空所选活动中奖记录</span><button class="btn btn-sm btn-danger" id="wipeWin">清空</button></div>
         <div class="hint">操作不可恢复，请先备份。</div>
       </div>
     </div>`;
@@ -1578,8 +1582,8 @@ async function viewSettings() {
     }
   };
   $("#wipeWin").onclick = async () => {
-    if (!S.curId) { toast("没有当前活动", "warn"); return; }
-    if (await confirmBox("确定清空当前活动的<b>中奖记录</b>？", { danger: true, okText: "清空" })) {
+    if (!S.curId) { toast("请先选择活动", "warn"); return; }
+    if (await confirmBox("确定清空所选活动的<b>中奖记录</b>？", { danger: true, okText: "清空" })) {
       await apiPost("/api/activity/" + S.curId + "/reset", { scope: "winners" });
       toast("已清空", "ok");
     }

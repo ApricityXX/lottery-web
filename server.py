@@ -50,10 +50,11 @@ PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8000
 store = db.Store(DB_FILE)
 
 COOKIE_NAME = "lottery_token"
+DEVICE_COOKIE_NAME = "lottery_checkin_device"
 
 DEFAULT_SETTINGS = {
     "allowRepeat": False,    # 允许重复中奖
-    "dedupeName": True,      # 名单按姓名去重
+    "dedupeName": True,      # 所有签到字段都相同时去重
     "removeOnWin": False,    # 中奖后移出名单
     "rollSeconds": 3,        # 名字滚动秒数
     "sound": True,           # 中奖音效
@@ -64,7 +65,7 @@ DEFAULT_SETTINGS = {
 
 DEFAULT_CHECKIN = {
     "enabled": True,
-    "mode": "lan",           # lan=局域网 / tunnel=一键远程 / public=自定义公网地址 / manual=仅手动导入
+    "mode": "tunnel",        # lan=局域网 / tunnel=一键远程 / public=自定义公网地址 / manual=仅手动导入
     "publicBaseUrl": "",
     "tunnelDomain": "",
     "welcome": "输入姓名即可加入抽奖名单",
@@ -90,9 +91,11 @@ def sanitize_fields(fields):
             continue
         seen.add(key)
         label = str((f or {}).get("label") or "").strip()[:12] or FIELD_KEYS.get(key, key)
-        out.append({"key": key, "label": label, "required": bool((f or {}).get("required")) or key == "name"})
-    if not any(f["key"] == "name" for f in out):
-        out.insert(0, {"key": "name", "label": "姓名", "required": True})
+        out.append({"key": key, "label": label, "required": bool((f or {}).get("required"))})
+    if not out:
+        raise ValueError("请至少保留一个签到字段")
+    if not any(f["required"] for f in out):
+        raise ValueError("请至少设置一个必填签到字段")
     return out
 
 
@@ -121,10 +124,19 @@ def field_value(p, key):
     return (p.get("extra") or {}).get(key, "")
 
 
+def duplicate_person(a, values):
+    fields = (a.get("checkin") or {}).get("fields") or []
+    if not fields:
+        return False
+    return any(all(str(field_value(p, f["key"]) or "").strip() ==
+                   str((values or {}).get(f["key"]) or "").strip() for f in fields)
+               for p in a.get("participants") or [])
+
+
 def make_person(values, source):
     """把字段值字典转成参与人记录：内置字段平铺，自定义字段进 extra"""
     p = {"id": uid(), "name": "", "empId": "", "dept": "", "phone": "",
-         "extra": {}, "source": source, "time": now_str()}
+         "extra": {}, "source": source, "time": now_str(), "deviceId": "", "checkinIp": ""}
     for k, v in (values or {}).items():
         k = str(k).strip()
         v = str(v or "").strip()[:40]
@@ -135,6 +147,13 @@ def make_person(values, source):
         elif CUSTOM_KEY_RE.match(k):
             p["extra"][k] = v
     return p
+
+
+def has_checkin(a, device_id, checkin_ip):
+    records = (a.get("participants") or []) + (a.get("winners") or [])
+    return any((device_id and r.get("deviceId") == device_id) or
+               (checkin_ip and r.get("checkinIp") == checkin_ip) for r in records)
+
 
 state_lock = threading.RLock()
 state = {"activities": [], "currentActivityId": None,
@@ -344,8 +363,7 @@ def new_activity(name, prizes=None, settings=None, checkin=None):
     st.update(settings or {})
     ck = json.loads(json.dumps(DEFAULT_CHECKIN))
     ck.update(checkin or {})
-    if not ck.get("fields"):
-        ck["fields"] = json.loads(json.dumps(DEFAULT_CHECKIN["fields"]))
+    ck["fields"] = sanitize_fields(ck["fields"])
     return {
         "id": uid(),
         "name": name or "未命名活动",
@@ -533,6 +551,7 @@ def checkin_url_of(a):
         return pub + path, "public"
     if ck.get("mode") == "tunnel":
         current = tunnel_manager.public_status()
+        path += "&ngrok-skip-browser-warning=true"
         return (current["url"] + path if current["url"] else ""), "tunnel"
     return "http://%s:%d%s" % (LAN_IP, PORT, path), "lan"
 
@@ -700,6 +719,22 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Set-Cookie", "%s=%s; Path=/; SameSite=Lax; HttpOnly%s%s" %
                          (COOKIE_NAME, value, "; Max-Age=0" if clear else "; Max-Age=604800", secure))
 
+    def _device_id(self):
+        value = self._cookie(DEVICE_COOKIE_NAME)
+        return value if re.match(r"^[0-9a-f]{32}$", value) else ""
+
+    def _set_device_cookie(self, value):
+        secure = "; Secure" if self.headers.get("X-Forwarded-Proto") == "https" else ""
+        self.send_header("Set-Cookie", "%s=%s; Path=/; Max-Age=31536000; SameSite=Lax; HttpOnly%s" %
+                         (DEVICE_COOKIE_NAME, value, secure))
+
+    def _client_ip(self):
+        direct = self.client_address[0]
+        forwarded = self.headers.get("X-Forwarded-For", "")
+        if direct in ("127.0.0.1", "::1") and forwarded:
+            return forwarded.split(",")[0].strip()[:80]
+        return direct
+
     # ---- GET ----
     def do_GET(self):
         apply_schedule()      # 每次请求顺带把到点的活动状态切换掉
@@ -821,6 +856,15 @@ class Handler(BaseHTTPRequestHandler):
                 if mode == "tunnel":
                     result["tunnel"] = tunnel_manager.public_status()
                 return self._json(result)
+
+        m = re.match(r"^/api/activity/([0-9a-f]+)/checkin-status$", path)
+        if m:
+            with state_lock:
+                a = find_activity(m.group(1))
+                if not a:
+                    return self._json({"ok": False, "error": "活动不存在"}, 404)
+                signed = has_checkin(a, self._device_id(), self._client_ip())
+            return self._json({"ok": True, "signed": signed})
 
         m = re.match(r"^/api/activity/([0-9a-f]+)/export$", path)
         if m:
@@ -1315,8 +1359,11 @@ class Handler(BaseHTTPRequestHandler):
                         a["archived"] = False
                         a["status"] = "active"
                     else:
-                        a = new_activity(body.get("name"), body.get("prizes"),
-                                         body.get("settings"), body.get("checkin"))
+                        try:
+                            a = new_activity(body.get("name"), body.get("prizes"),
+                                             body.get("settings"), body.get("checkin"))
+                        except ValueError as exc:
+                            return self._json({"ok": False, "error": str(exc)}, 400)
                         if body.get("note") is not None:
                             a["note"] = str(body["note"])[:100]
                         if body.get("status") in ("draft", "active", "ended"):
@@ -1396,7 +1443,10 @@ class Handler(BaseHTTPRequestHandler):
                         if "welcome" in src:
                             ck["welcome"] = str(src["welcome"]).strip()[:60]
                         if isinstance(src.get("fields"), list):
-                            ck["fields"] = sanitize_fields(src["fields"])
+                            try:
+                                ck["fields"] = sanitize_fields(src["fields"])
+                            except ValueError as exc:
+                                return self._json({"ok": False, "error": str(exc)}, 400)
                     a["updatedAt"] = now_full()
                     save_state_locked()
                     snap = activity_public(a)
@@ -1478,10 +1528,8 @@ class Handler(BaseHTTPRequestHandler):
                             continue
                         if f["key"] in body:
                             updated["extra"][f["key"]] = str(body[f["key"]] or "").strip()[:40]
-                    if not updated["name"]:
-                        return self._json({"ok": False, "error": "姓名不能为空"})
                     lack = [r["label"] for r in parsers.required_fields(a["checkin"].get("fields"))
-                            if r["key"] != "name" and not str(field_value(updated, r["key"]) or "").strip()]
+                            if not str(field_value(updated, r["key"]) or "").strip()]
                     if lack:
                         return self._json({"ok": False, "error": "「%s」为必填项，不能清空" % "、".join(lack)}, 400)
                     p.clear()
@@ -1621,26 +1669,40 @@ class Handler(BaseHTTPRequestHandler):
                         return self._json({"ok": False, "error": "签到还没开始" + ("（%s 开放）" % s0 if s0 else "")}, 400)
                     if not ck.get("enabled") or ck.get("mode") == "manual":
                         return self._json({"ok": False, "error": "本活动未开启扫码签到"}, 400)
+                    device_id = self._device_id() or secrets.token_hex(16)
+                    checkin_ip = self._client_ip()
+                    if has_checkin(a, device_id, checkin_ip):
+                        return self._json({"ok": False, "error": "当前设备或 IP 已完成本活动签到，不能重复签到",
+                                           "duplicate": True, "checkinDuplicate": True,
+                                           "count": len(a["participants"])}, 409)
                     values = {}
                     for f in ck.get("fields", DEFAULT_CHECKIN["fields"]):
                         v = str(body.get(f["key"]) or "").strip()
                         if f.get("required") and not v:
                             return self._json({"ok": False, "error": "请填写「%s」" % f.get("label", f["key"])}, 400)
                         values[f["key"]] = v[:30]
-                    if not values.get("name"):
-                        return self._json({"ok": False, "error": "请输入姓名"}, 400)
-                    if a["settings"].get("dedupeName") and any(
-                            p["name"] == values["name"] for p in a["participants"]):
-                        return self._json({"ok": False, "error": "该名字已签到，换个昵称试试～",
+                    if a["settings"].get("dedupeName") and duplicate_person(a, values):
+                        return self._json({"ok": False, "error": "相同的签到信息已存在，请勿重复提交",
                                            "duplicate": True, "count": len(a["participants"])})
                     p = make_person(values, "checkin")
+                    p["deviceId"] = device_id
+                    p["checkinIp"] = checkin_ip
                     a["participants"].append(p)
                     a["updatedAt"] = now_full()
                     store.add_participant(a, p)      # 热路径：单行 INSERT，不重写整份名单
                     payload = {"participant": p, "count": len(a["participants"])}
                 broadcast_event(a, "checkin", payload)
                 broadcast_activity(a)
-                return self._json({"ok": True, **payload})
+                result = {"ok": True, "participant": public_person(p), "count": payload["count"]}
+                response = json.dumps(result, ensure_ascii=False).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(response)))
+                self.send_header("Cache-Control", "no-store")
+                self._set_device_cookie(device_id)
+                self.end_headers()
+                self.wfile.write(response)
+                return
 
             # ===== 抽奖 =====
             m = re.match(r"^/api/activity/([0-9a-f]+)/draw$", path)
@@ -1670,7 +1732,8 @@ class Handler(BaseHTTPRequestHandler):
                     records = [{
                         "id": uid(6), "participantId": p["id"], "name": p["name"], "empId": p.get("empId", ""),
                         "dept": p.get("dept", ""), "phone": p.get("phone", ""),
-                        "extra": dict(p.get("extra") or {}),
+                        "extra": dict(p.get("extra") or {}), "deviceId": p.get("deviceId", ""),
+                        "checkinIp": p.get("checkinIp", ""),
                         "prize": prize["name"], "prizeId": prize["id"], "time": now_str(), "drawId": draw_id,
                     } for p in picked]
                     a["winners"].extend(records)
@@ -1697,13 +1760,18 @@ class Handler(BaseHTTPRequestHandler):
                     prize = next((p for p in a["prizes"] if p["id"] == body.get("prizeId")), None)
                     if not prize:
                         return self._json({"ok": False, "error": "请选择奖项"})
-                    name = str(body.get("name") or "").strip()
-                    if not name:
-                        return self._json({"ok": False, "error": "请输入姓名"})
-                    src = next((p for p in a["participants"] if p["name"] == name), None) or {}
+                    participant_id = str(body.get("participantId") or "")
+                    src = next((p for p in a["participants"] if p["id"] == participant_id), None)
+                    if participant_id and not src:
+                        return self._json({"ok": False, "error": "未找到该成员"}, 404)
+                    name = (src or {}).get("name") or str(body.get("name") or "").strip()
+                    if not src and not name:
+                        return self._json({"ok": False, "error": "请选择中奖人员"})
+                    src = src or next((p for p in a["participants"] if p["name"] == name), None) or {}
                     rec = {"id": uid(6), "participantId": src.get("id", ""), "name": name,
                            "empId": src.get("empId", ""), "dept": src.get("dept", ""),
                            "phone": src.get("phone", ""), "extra": dict(src.get("extra") or {}),
+                           "deviceId": src.get("deviceId", ""), "checkinIp": src.get("checkinIp", ""),
                            "prize": prize["name"],
                            "prizeId": prize["id"], "time": now_str(), "drawId": "manual-" + uid(6)}
                     a["winners"].append(rec)
@@ -1747,7 +1815,9 @@ class Handler(BaseHTTPRequestHandler):
                                     "id": participant_id, "name": w["name"], "empId": w.get("empId", ""),
                                     "dept": w.get("dept", ""), "phone": w.get("phone", ""),
                                     "extra": dict(w.get("extra") or {}),
-                                    "source": "import", "time": w.get("time", "")})
+                                    "deviceId": w.get("deviceId", ""), "checkinIp": w.get("checkinIp", ""),
+                                    "source": "checkin" if w.get("deviceId") or w.get("checkinIp") else "import",
+                                    "time": w.get("time", "")})
                     save_state_locked()
                     cnt = len(removed)
                 broadcast_activity(a)
@@ -1810,15 +1880,15 @@ class Handler(BaseHTTPRequestHandler):
             for item in people:
                 item = item or {}
                 name = str(item.get("name") or "").strip()
-                if not name or len(name) > 30:
+                if len(name) > 30:
                     invalid += 1
                     continue
-                lack = [r for r in reqs if r["key"] != "name" and not str(item.get(r["key"]) or "").strip()]
+                lack = [r for r in reqs if not str(item.get(r["key"]) or "").strip()]
                 if lack:
                     invalid += 1
-                    bad.append("%s（缺%s）" % (name, "、".join(r["label"] for r in lack)))
+                    bad.append("%s（缺%s）" % (name or "未命名人员", "、".join(r["label"] for r in lack)))
                     continue
-                if skip_duplicate and any(p["name"] == name for p in a["participants"]):
+                if skip_duplicate and duplicate_person(a, item):
                     skipped += 1
                     continue
                 person = make_person(item, source)

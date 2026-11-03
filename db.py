@@ -20,7 +20,7 @@ import sqlite3
 import threading
 from contextlib import contextmanager
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -69,6 +69,8 @@ CREATE TABLE IF NOT EXISTS participants (
     extra_json  TEXT NOT NULL DEFAULT '{}',
     source      TEXT NOT NULL DEFAULT '',
     time        TEXT NOT NULL DEFAULT '',
+    device_id   TEXT NOT NULL DEFAULT '',
+    checkin_ip  TEXT NOT NULL DEFAULT '',
     UNIQUE (activity_id, person_id)
 );
 CREATE INDEX IF NOT EXISTS idx_participants_activity ON participants(activity_id, seq);
@@ -87,6 +89,8 @@ CREATE TABLE IF NOT EXISTS winners (
     prize_id    TEXT NOT NULL DEFAULT '',
     time        TEXT NOT NULL DEFAULT '',
     draw_id     TEXT NOT NULL DEFAULT '',
+    device_id   TEXT NOT NULL DEFAULT '',
+    checkin_ip  TEXT NOT NULL DEFAULT '',
     UNIQUE (activity_id, win_id)
 );
 CREATE INDEX IF NOT EXISTS idx_winners_activity ON winners(activity_id, seq);
@@ -121,26 +125,29 @@ def _jdump(v, default):
 def person_row(aid, p):
     return (aid, _s(p.get("id")), _s(p.get("name")), _s(p.get("empId")),
             _s(p.get("dept")), _s(p.get("phone")), _jdump(p.get("extra"), {}),
-            _s(p.get("source")), _s(p.get("time")))
+            _s(p.get("source")), _s(p.get("time")), _s(p.get("deviceId")), _s(p.get("checkinIp")))
 
 
 def person_dict(r):
     return {"id": r["person_id"], "name": r["name"], "empId": r["emp_id"],
             "dept": r["dept"], "phone": r["phone"],
-            "extra": _jload(r["extra_json"], {}), "source": r["source"], "time": r["time"]}
+            "extra": _jload(r["extra_json"], {}), "source": r["source"], "time": r["time"],
+            "deviceId": r["device_id"], "checkinIp": r["checkin_ip"]}
 
 
 def winner_row(aid, w):
     return (aid, _s(w.get("id")), _s(w.get("participantId")), _s(w.get("name")), _s(w.get("empId")),
             _s(w.get("dept")), _s(w.get("phone")), _jdump(w.get("extra"), {}),
-            _s(w.get("prize")), _s(w.get("prizeId")), _s(w.get("time")), _s(w.get("drawId")))
+            _s(w.get("prize")), _s(w.get("prizeId")), _s(w.get("time")), _s(w.get("drawId")),
+            _s(w.get("deviceId")), _s(w.get("checkinIp")))
 
 
 def winner_dict(r):
     return {"id": r["win_id"], "participantId": r["person_id"], "name": r["name"], "empId": r["emp_id"],
             "dept": r["dept"], "phone": r["phone"],
             "extra": _jload(r["extra_json"], {}), "prize": r["prize"],
-            "prizeId": r["prize_id"], "time": r["time"], "drawId": r["draw_id"]}
+            "prizeId": r["prize_id"], "time": r["time"], "drawId": r["draw_id"],
+            "deviceId": r["device_id"], "checkinIp": r["checkin_ip"]}
 
 
 def user_row(u):
@@ -170,7 +177,8 @@ def canonical_person(p):
     return {"id": _s(p.get("id")), "name": _s(p.get("name")), "empId": _s(p.get("empId")),
             "dept": _s(p.get("dept")), "phone": _s(p.get("phone")),
             "extra": _jload(_jdump(p.get("extra"), {}), {}),
-            "source": _s(p.get("source")), "time": _s(p.get("time"))}
+            "source": _s(p.get("source")), "time": _s(p.get("time")),
+            "deviceId": _s(p.get("deviceId")), "checkinIp": _s(p.get("checkinIp"))}
 
 
 def canonical_winner(w):
@@ -179,7 +187,8 @@ def canonical_winner(w):
             "dept": _s(w.get("dept")), "phone": _s(w.get("phone")),
             "extra": _jload(_jdump(w.get("extra"), {}), {}),
             "prize": _s(w.get("prize")), "prizeId": _s(w.get("prizeId")),
-            "time": _s(w.get("time")), "drawId": _s(w.get("drawId"))}
+            "time": _s(w.get("time")), "drawId": _s(w.get("drawId")),
+            "deviceId": _s(w.get("deviceId")), "checkinIp": _s(w.get("checkinIp"))}
 
 
 def _act_meta(a):
@@ -279,6 +288,11 @@ class Store:
     def init_schema(self):
         self._conn().executescript(SCHEMA)
         with self._tx() as conn:
+            for table in ("participants", "winners"):
+                cols = {r["name"] for r in conn.execute("PRAGMA table_info(%s)" % table)}
+                for col in ("device_id", "checkin_ip"):
+                    if col not in cols:
+                        conn.execute("ALTER TABLE %s ADD COLUMN %s TEXT NOT NULL DEFAULT ''" % (table, col))
             winner_cols = {r["name"] for r in conn.execute("PRAGMA table_info(winners)")}
             if "person_id" not in winner_cols:
                 conn.execute("ALTER TABLE winners ADD COLUMN person_id TEXT NOT NULL DEFAULT ''")
@@ -374,7 +388,7 @@ class Store:
         if people:
             conn.executemany(
                 "INSERT INTO participants (activity_id, person_id, name, emp_id, dept, phone, "
-                "extra_json, source, time) VALUES (?,?,?,?,?,?,?,?,?)",
+                "extra_json, source, time, device_id, checkin_ip) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 [person_row(aid, p) for p in people])
 
     def _replace_winners(self, conn, aid, wins):
@@ -382,7 +396,7 @@ class Store:
         if wins:
             conn.executemany(
                 "INSERT INTO winners (activity_id, win_id, person_id, name, emp_id, dept, phone, "
-                "extra_json, prize, prize_id, time, draw_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                "extra_json, prize, prize_id, time, draw_id, device_id, checkin_ip) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 [winner_row(aid, w) for w in wins])
 
     def _ensure_activity(self, conn, a):
@@ -475,7 +489,7 @@ class Store:
             self._ensure_activity(conn, a)
             conn.execute(
                 "INSERT INTO participants (activity_id, person_id, name, emp_id, dept, phone, "
-                "extra_json, source, time) VALUES (?,?,?,?,?,?,?,?,?)", person_row(a["id"], person))
+                "extra_json, source, time, device_id, checkin_ip) VALUES (?,?,?,?,?,?,?,?,?,?,?)", person_row(a["id"], person))
             conn.execute("UPDATE activities SET updated_at=? WHERE id=?",
                          (_s(a.get("updatedAt")), a["id"]))
 
@@ -487,7 +501,7 @@ class Store:
             self._ensure_activity(conn, a)
             conn.executemany(
                 "INSERT INTO participants (activity_id, person_id, name, emp_id, dept, phone, "
-                "extra_json, source, time) VALUES (?,?,?,?,?,?,?,?,?)",
+                "extra_json, source, time, device_id, checkin_ip) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 [person_row(a["id"], p) for p in people])
             conn.execute("UPDATE activities SET updated_at=? WHERE id=?",
                          (_s(a.get("updatedAt")), a["id"]))

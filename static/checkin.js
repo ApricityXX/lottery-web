@@ -43,6 +43,17 @@
     });
   }
 
+  function renderDone(name, count, duplicate) {
+    $("#formArea").innerHTML = `
+      <div class="done-box" id="doneBox">
+        <div class="ok-anim">✅</div>
+        <div class="nm">${esc(duplicate ? "已完成签到" : (name || "签到成功"))}</div>
+        <div class="small muted">${duplicate ? "当前设备或 IP 已完成本活动签到，不能重复签到" : "签到成功，已进入抽奖名单"}</div>
+        ${count ? `<div class="tag gold" style="margin-top:10px">当前共有 ${count} 人签到</div>` : ""}
+        <div class="small dim" style="margin-top:10px">请留意大屏，祝你好运 🎉</div>
+      </div>`;
+  }
+
   function submit() {
     const ck = act.checkin || {};
     const fields = (ck.fields && ck.fields.length) ? ck.fields : [{ key: "name", label: "姓名", required: true }];
@@ -63,20 +74,12 @@
     }).then(r => r.json()).then(res => {
       btn.disabled = false; btn.textContent = "立即签到";
       if (res.ok) {
-        $("#formArea").innerHTML = `
-          <div class="done-box">
-            <div class="ok-anim">✅</div>
-            <div class="nm">${esc(body.name)}</div>
-            <div class="small muted">签到成功，已进入抽奖名单</div>
-            ${res.count ? `<div class="tag gold" style="margin-top:10px">你是第 ${res.count} 位签到的</div>` : ""}
-            <div class="small dim" style="margin-top:10px">请留意大屏，祝你好运 🎉</div>
-            <button class="btn submit" id="againBtn" style="margin-top:18px">再签一位</button>
-          </div>`;
-        $("#againBtn").onclick = () => { renderForm(); setMsg(""); };
+        renderDone(body.name || body.empId || body.phone, res.count, false);
         $("#logo").textContent = "🎉";
         setMsg("");
         refresh();
       } else {
+        if (res.checkinDuplicate) renderDone("", res.count, true);
         setMsg(res.error || "签到失败，请重试", "err");
       }
     }).catch(() => {
@@ -86,14 +89,19 @@
   }
 
   function refresh() {
-    fetch("/api/activity/" + aid).then(r => r.json()).then(a => {
+    Promise.all([
+      fetch("/api/activity/" + aid).then(r => r.json()),
+      fetch("/api/activity/" + aid + "/checkin-status").then(r => r.json()).catch(() => ({}))
+    ]).then(([a, status]) => {
       if (!a || !a.id) return;
       act = a;
       document.title = a.name || "活动签到";
       $("#actName").textContent = a.name || "活动签到";
-      $("#welcome").textContent = (a.checkin && a.checkin.welcome) || "输入姓名即可加入抽奖名单";
+      $("#welcome").textContent = (a.checkin && a.checkin.welcome) || "填写信息即可加入抽奖名单";
       $("#count").textContent = a.participants.length;
-      if (!$("#submitBtn") && !$("#againBtn")) renderForm();
+      if (status.signed) {
+        if (!$("#doneBox")) renderDone("", 0, true);
+      } else if (!$("#submitBtn") && !$("#doneBox")) renderForm();
     }).catch(() => {});
   }
 

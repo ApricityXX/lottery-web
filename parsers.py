@@ -240,17 +240,15 @@ def is_header_like(s):
 
 
 def required_fields(fields):
-    """活动里设为必填的字段（姓名恒为必填）"""
+    """活动里设为必填的字段"""
     out = []
     for f in (fields or []):
         k = f.get("key")
         if not k:
             continue
-        if f.get("required") or k == "name":
+        if f.get("required"):
             if not any(x["key"] == k for x in out):
                 out.append({"key": k, "label": f.get("label") or k})
-    if not any(x["key"] == "name" for x in out):
-        out.insert(0, {"key": "name", "label": "姓名"})
     return out
 
 
@@ -258,8 +256,7 @@ def rows_to_people(rows, mapping=None, has_header=None, fields=None):
     """把二维表按映射转成人员字典列表。
 
     返回 (people, dropped, issues)。
-    - 姓名为空 → 跳过
-    - 活动里设为「必填」的其它字段为空 → 也跳过（遵循管理员的字段设置）
+    - 活动里设为「必填」的字段为空 → 跳过（遵循管理员的字段设置）
     - 必填字段在表里根本没有对应的列 → 整表标记 missing 问题
     """
     if not rows:
@@ -271,7 +268,7 @@ def rows_to_people(rows, mapping=None, has_header=None, fields=None):
         mapping = suggest_mapping(rows if has_header else [], fields) or {"name": 0}
     reqs = required_fields(fields)
     issues = []
-    missing_cols = [r for r in reqs if r["key"] != "name" and mapping.get(r["key"]) is None]
+    missing_cols = [r for r in reqs if mapping.get(r["key"]) is None]
     missing_keys = {r["key"] for r in missing_cols}
     for r in missing_cols:
         issues.append({"kind": "missing_column", "key": r["key"], "label": r["label"]})
@@ -288,17 +285,17 @@ def rows_to_people(rows, mapping=None, has_header=None, fields=None):
             if v:
                 values[str(k).strip()] = v
         name = norm_name(values.get("name", ""))
-        if not name or is_header_like(name):   # 姓名为空或重复表头 → 跳过
+        if is_header_like(name):
             dropped += 1
-            if name or any(str(c).strip() for c in r):
-                issues.append({"kind": "empty", "row": idx + 1, "key": "name", "label": "姓名"})
             continue
-        lack = [q for q in reqs if q["key"] != "name"
-                and q["key"] not in missing_keys and not values.get(q["key"])]
-        if lack:                                # 必填字段留空 → 跳过
+        lack = [q for q in reqs if q["key"] not in missing_keys and not values.get(q["key"])]
+        if lack:
             dropped += 1
             issues.append({"kind": "empty", "row": idx + 1, "key": lack[0]["key"],
                            "label": "、".join(q["label"] for q in lack)})
+            continue
+        if not values:
+            dropped += 1
             continue
         values["name"] = name
         out.append(values)

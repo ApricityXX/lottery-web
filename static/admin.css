@@ -41,6 +41,8 @@
 .top-actions { display: flex; align-items: center; gap: 8px; min-width: 0; margin-left: auto; }
 .top-actions .select { width: 190px; min-width: 0; }
 .view { padding: 22px 24px 70px; width: 100%; max-width: 1200px; }
+.dashboard-bottom { align-items: stretch; }
+.dashboard-bottom > .card { height: 100%; margin-top: 0; }
 
 /* 页头 */
 .page-hd { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; margin-bottom: 18px; flex-wrap: wrap; }

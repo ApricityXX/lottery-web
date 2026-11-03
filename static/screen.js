@@ -6,6 +6,26 @@
   const esc = v => String(v == null ? "" : v).replace(/[&<>"']/g, c => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const wonBy = (w, p) => w.participantId ? w.participantId === p.id : w.name === p.name;
+  const personName = p => (p && p.name) || "未命名人员";
+  let displayIndexes = new Map();
+  function rebuildDisplayIndexes(a) {
+    const counts = {}, indexes = new Map();
+    const add = (id, name) => {
+      if (!id || indexes.has(id)) return;
+      const key = String(name || "");
+      const index = counts[key] || 0;
+      indexes.set(id, index);
+      counts[key] = index + 1;
+    };
+    (a.participants || []).forEach(p => add(p.id, personName(p)));
+    (a.winners || []).forEach(w => add(w.participantId || w.id, personName(w)));
+    displayIndexes = indexes;
+  }
+  const personLabel = p => {
+    const id = p && (p.participantId || p.id);
+    const index = displayIndexes.get(id) || 0;
+    return personName(p) + (index > 0 ? " #" + index : "");
+  };
 
   const pinned = new URLSearchParams(location.search).get("activity");
   let actId = pinned, act = null, es = null;
@@ -86,6 +106,7 @@
   }
   function render(a) {
     act = a;
+    rebuildDisplayIndexes(a);
     $("#titleText").textContent = a.name || "幸运大抽奖";
     document.title = a.name || "幸运大抽奖";
     $("#countTop").textContent = a.counts ? a.counts.participants : a.participants.length;
@@ -135,7 +156,7 @@
       const p = a.participants[i];
       const won = a.settings && !a.settings.allowRepeat && a.winners.some(w => wonBy(w, p));
       h += `<div class="p-item ${won ? "won" : ""} ${hit && i === a.participants.length - 1 ? "hit" : ""}">
-        <span class="nm">${esc(p.name)}</span>${p.dept ? `<span class="dp">${esc(p.dept)}</span>` : ""}</div>`;
+        <span class="nm">${esc(personLabel(p))}</span>${p.dept ? `<span class="dp">${esc(p.dept)}</span>` : ""}</div>`;
     }
     box.innerHTML = h;
     box.scrollTop = keep;
@@ -160,10 +181,10 @@
         ${wall
         ? `<div class="wall">${map[n].map(w => `
             <div class="wall-item">
-              <div class="n">${esc(w.name)}</div>
+              <div class="n">${esc(personLabel(w))}</div>
               ${w.dept ? `<div class="t">${esc(w.dept)}</div>` : ""}
             </div>`).join("")}</div>`
-        : `<div class="wn">${map[n].map(w => `<span>${esc(w.name)}</span>`).join("")}</div>`}
+        : `<div class="wn">${map[n].map(w => `<span>${esc(personLabel(w))}</span>`).join("")}</div>`}
       </div>`).join("");
   }
 
@@ -182,14 +203,17 @@
     es.addEventListener("checkin", e => {
       try {
         const d = JSON.parse(e.data);
-        toast("🎉 " + d.participant.name + " 签到成功");
+        if (act && d.participant) rebuildDisplayIndexes({
+          ...act, participants: [...act.participants, d.participant]
+        });
+        toast("🎉 " + personLabel(d.participant) + " 签到成功");
       } catch (err) {}
     });
     es.addEventListener("draw", e => {
       try {
         const d = JSON.parse(e.data);
         if (rolling) return;
-        reveal(d.winners.map(w => w.name), d.prize, d.drawId);
+        reveal(d.winners, d.prize, d.drawId);
       } catch (err) {}
     });
     es.addEventListener("activities", () => {
@@ -209,17 +233,17 @@
   }
   function pool() {
     if (!act) return [];
-    const people = (act.settings && act.settings.allowRepeat) ? act.participants
+    return (act.settings && act.settings.allowRepeat) ? act.participants
       : act.participants.filter(p => !act.winners.some(w => wonBy(w, p)));
-    return people.map(p => p.name);
   }
   function stopRoll() {
     if (rollTimer) { clearInterval(rollTimer); rollTimer = null; }
     $("#nameBox").classList.remove("rolling");
   }
-  function reveal(names, prize, drawId) {
+  function reveal(winners, prize, drawId) {
     if (drawId) { if (lastDrawId === drawId) return; lastDrawId = drawId; }
     stopRoll();
+    const names = winners.map(w => personLabel(w));
     const m = $("#nameMain");
     m.textContent = names.join(" 、 ");
     m.classList.remove("pop"); void m.offsetWidth; m.classList.add("pop");
@@ -230,8 +254,8 @@
   }
   function draw() {
     if (rolling || !act) return;
-    const names = pool();
-    if (!names.length) { toast("没有可抽奖的人员，请先导入名单或开启签到"); return; }
+    const people = pool();
+    if (!people.length) { toast("没有可抽奖的人员，请先导入名单或开启签到"); return; }
     rolling = true;
     const btn = $("#drawBtn");
     btn.disabled = true; btn.textContent = "🎲 抽奖中…";
@@ -239,7 +263,7 @@
     $("#nameSub").textContent = "……";
     $("#nameBox").classList.add("rolling");
     rollStart = Date.now();
-    const tick = () => { $("#nameMain").textContent = names[Math.floor(Math.random() * names.length)]; };
+    const tick = () => { $("#nameMain").textContent = personLabel(people[Math.floor(Math.random() * people.length)]); };
     tick();
     rollTimer = setInterval(tick, 70);
     const ms = (act.settings && act.settings.rollSeconds ? act.settings.rollSeconds : 3) * 1000;
@@ -247,7 +271,7 @@
       method: "POST", headers: { "Content-Type": "application/json" }, body: "{}"
     }).then(r => r.json()).then(res => {
       if (!res.ok) throw new Error(res.error || "抽奖失败");
-      return sleep(Math.max(0, ms - (Date.now() - rollStart))).then(() => reveal(res.winners.map(w => w.name), res.prize, res.drawId));
+      return sleep(Math.max(0, ms - (Date.now() - rollStart))).then(() => reveal(res.winners, res.prize, res.drawId));
     }).catch(err => {
       stopRoll();
       $("#nameSub").textContent = "按空格或点击下方按钮开始抽奖";
